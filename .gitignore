@@ -1,0 +1,24 @@
+# Salidas de compilacion de CubeIDE
+Debug/
+Release/
+*.elf
+*.map
+*.o
+*.d
+*.su
+*.list
+
+# Tests en PC
+tests/*.exe
+tests/test_cinematica
+tests/test_planificador
+tests/test_parser
+tests/sim_move
+tests/*.csv
+
+# Documentos de trabajo: no se suben al repositorio
+CLAUDE.md
+SPEC.md
+
+# Codigo de referencia (TP2, microrl original): solo lectura, no se sube
+reference/
