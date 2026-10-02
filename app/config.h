@@ -103,6 +103,21 @@
 #define PLAN_TICKS_ATASCO			50
 
 /* ------------------------------------------------------------------------- */
+/* Consola (USART1)                                                          */
+/* ------------------------------------------------------------------------- */
+
+#define UART_BAUDIOS				115200U
+/** Buffer de recepcion (potencia de 2). Sobra para pegar una linea de 100 caracteres. */
+#define UART_RX_BUF_BYTES			128U
+/** Buffer de transmision (potencia de 2). El eco de microrl manda ~20 bytes por tecla:
+ *  pegar 100 caracteres genera ~2 KB de salida en unos pocos ms. */
+#define UART_TX_BUF_BYTES			4096U
+/** Prioridad NVIC de la USART1 (0 = maxima). El SysTick queda en la minima (15). */
+#define UART_PRIORIDAD_IRQ			1U
+/** Bytes de RX que la consola procesa por vuelta del loop, para no demorar el tick. */
+#define CONSOLA_BYTES_POR_VUELTA	32U
+
+/* ------------------------------------------------------------------------- */
 /* Varios                                                                    */
 /* ------------------------------------------------------------------------- */
 
