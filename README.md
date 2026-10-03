@@ -52,51 +52,14 @@ make sim
 `sim_move` imprime por `stderr` el resumen (duración, velocidad articular máxima, desviación de la recta) y por
 `stdout` el CSV: `t_ms, s_mm, v_mm_s, x_cmd, y_cmd, q1_deg, q2_deg, w1_dps, w2_dps, desv_mm`.
 
-## Prueba de E0 en la placa
+## Prueba pendiente en la placa: encoders AS5600 (E4a)
 
-1. Compilar y grabar por SWD (ST-Link).
-2. El LED PC13 debe parpadear a **1 Hz**: contar 60 destellos en 60 s con cronómetro (o medir 1,000 Hz en PC13).
-   Si parpadea a 5 Hz, el cristal HSE no arrancó (el micro está con el HSI).
-3. En el depurador, pausar y verificar: `SystemCoreClock == 96000000`; `RCC->CR` con `HSERDY` (bit 17) y
-   `PLLRDY` (bit 25) en 1; `RCC->CFGR` con `SWS` (bits 3:2) = `0b10` (PLL); `FLASH->ACR & 0xF == 3`.
-
-## Prueba de E2 en la placa
-
-Conexión: adaptador USB-serie **de 3,3 V** con TX del adaptador → PA10, RX del adaptador → PA9 y GND común.
-Terminal (PuTTY o Tera Term): 115200 baudios, 8N1, sin control de flujo.
-
-1. Grabar y resetear. Debe aparecer `SCARA v2 - consola lista. HELP para ver los comandos.` y el prompt `SCARA>`.
-   Si aparece basura: revisar baudios del terminal y que E0 haya pasado (reloj a 96 MHz).
-2. `HELP` → lista de comandos y `OK`.
-3. `STATUS` → `OK estado=IDLE speed=30.0 accel=80.0 tick_max_ms=20 rx_perdidos=0 tx_perdidos=0 reloj=HSE enc1=OK enc2=OK`.
-   Si en vez de `30.0` sale vacío, falta *Use float with printf from newlib-nano*.
-4. `SPEED 50` → `OK speed=50.0`; `SPEED 999` → `ERR 6 speed fuera de [1.0, 50.0] mm/s`;
-   `ACCEL 120` → `OK accel=120.0`; `HOLA` → `ERR 1 comando desconocido ...`.
-5. Edición: escribir `STTUS`, flecha izquierda tres veces, escribir `A`, Enter → responde como `STATUS`.
-   Flecha arriba recupera el comando anterior; Backspace borra.
-6. Pegar de una vez (clic derecho en PuTTY) estas 10 líneas, unos 100 caracteres en total:
-   ```
-   speed 11
-   speed 12
-   speed 13
-   speed 14
-   speed 15
-   speed 16
-   speed 17
-   speed 18
-   speed 19
-   speed 20
-   ```
-   Deben salir 10 `OK speed=...` en orden, del 11 al 20.
-7. `STATUS` otra vez → `speed=20.0`, `rx_perdidos=0`, `tx_perdidos=0` y `tick_max_ms` en 20 o 21
-   (el tick de 20 ms no se atrasó mientras se procesaba lo pegado).
-
-Anotar: lo que responde `STATUS` en los pasos 3 y 7, y si algún paso no dio lo esperado.
-
-## Prueba de E4a en la placa: encoders AS5600
+Las pruebas de E0 (reloj y LED) y E2 (consola) ya pasaron; esta es la única pendiente.
 
 **Con los servos sin alimentar** (fuente de servos apagada): en esta etapa las juntas se mueven a mano.
-Cableado: AS5600 del hombro en I2C1 (PB8 SCL, PB9 SDA); AS5600 del codo en I2C2 (PB10 SCL, PB3 SDA); 3,3 V y GND.
+
+- Consola: adaptador USB-serie de 3,3 V, TX del adaptador → PA10, RX → PA9, GND común; 115200 8N1.
+- Encoders: AS5600 del hombro en I2C1 (PB8 SCL, PB9 SDA); AS5600 del codo en I2C2 (PB10 SCL, PB3 SDA); 3,3 V y GND.
 
 ### 1. Comunicación
 
@@ -157,8 +120,6 @@ Las tres últimas filas son los topes mecánicos reales: con ellas se ajustan lo
 
 ## Qué reportar
 
-1. **E2:** la respuesta de `STATUS` (pasos 3 y 7) y qué pasos no dieron lo esperado, con lo que apareció.
-2. **E4a, comunicación:** lo que respondieron `I2CSCAN` y `RAW`, y el mínimo y máximo de cuentas del paso de ruido.
-3. **E4a, calibración:** las tablas de calibración y de verificación completas.
-4. Si algo se reinicia solo: anotarlo. Primero descartar la alimentación (GND común, fuente), que suele parecer
-   un bug de software.
+1. **Comunicación:** lo que respondieron `I2CSCAN`, `RAW` y `STATUS`, y el mínimo y máximo de cuentas del paso de ruido.
+2. **Calibración:** las tablas de calibración y de verificación completas.
+3. Cualquier paso que no dio lo esperado, con lo que apareció en la consola.
