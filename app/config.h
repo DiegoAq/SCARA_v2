@@ -29,16 +29,28 @@
 #define PULSE_MIN_US				500		/**< [CONFIRMAR] calibrar por servo */
 #define PULSE_MAX_US				2500	/**< [CONFIRMAR] calibrar por servo */
 
+/* [CONFIRMAR al mover el servo en E3] dato teorico del equipo (2026-10-03): a 90 de servo
+ * el brazo apunta al frente (+X) y al AUMENTAR el angulo de servo gira en sentido horario. */
 #define SHOULDER_ZERO_SERVO_DEG		90.0f	/**< Angulo de servo con el brazo sobre +X (theta1 = 0) */
-#define SHOULDER_SIGN				1.0f	/**< +1 o -1: sentido del servo respecto del antihorario */
+#define SHOULDER_SIGN				(-1.0f)	/**< +1 o -1: sentido del servo respecto del antihorario */
 #define SHOULDER_SERVO_MIN_DEG		0.0f	/**< [CONFIRMAR] tope mecanico inferior, en angulo de servo */
 #define SHOULDER_SERVO_MAX_DEG		180.0f	/**< [CONFIRMAR] tope mecanico superior, en angulo de servo */
 
-/* [CONFIRMADO 2026-10-03] brazo recto con el codo en 90 de servo (default del SPEC). */
-#define ELBOW_ZERO_SERVO_DEG		90.0f	/**< Angulo de servo con el brazo recto (theta2 = 0) */
-#define ELBOW_SIGN					1.0f
-#define ELBOW_SERVO_MIN_DEG			0.0f	/**< [CONFIRMAR] */
-#define ELBOW_SERVO_MAX_DEG			180.0f	/**< [CONFIRMAR] */
+/* Codo (plan del equipo, 2026-10-03): el servo se monta de modo que su 0 quede en el tope
+ * fisico de plegado (la pinza choca con la base a ~9 cm del eje del hombro) y asi aprovechar
+ * todo el recorrido. Al subir el angulo de servo el brazo se extiende; el antebrazo se pliega
+ * en sentido ANTIHORARIO => theta2 = ZERO - servo. El angulo de servo con el brazo recto
+ * (ELBOW_ZERO_SERVO_DEG) todavia NO se conoce: se mide en E3 moviendo el servo despacio y
+ * leyendo el encoder ya calibrado (por geometria deberia rondar los 150).
+ *
+ * [CONFIRMAR en E3] Los tres valores de abajo son PROVISORIOS y equivalen al mismo rango fisico
+ * (theta2 de 0 a 152): hoy solo los usan la cinematica y los tests, ningun servo se mueve con
+ * ellos. Al medir, dejar ELBOW_SERVO_MIN_DEG unos grados ANTES del choque: un servo empujando
+ * contra un tope se quema. */
+#define ELBOW_ZERO_SERVO_DEG		180.0f	/**< Angulo de servo con el brazo recto (theta2 = 0) */
+#define ELBOW_SIGN					(-1.0f)
+#define ELBOW_SERVO_MIN_DEG			28.0f	/**< [CONFIRMAR] tope antes del choque de la pinza con la base */
+#define ELBOW_SERVO_MAX_DEG			180.0f	/**< Brazo recto */
 
 /* Limites articulares: se DERIVAN de los limites de servo; no editar a mano. */
 #define CFG_MIN(a, b)				(((a) < (b)) ? (a) : (b))
@@ -62,7 +74,8 @@
 /* Espacio de trabajo operativo                                              */
 /* ------------------------------------------------------------------------- */
 
-#define R_MIN_OP_MM					285.0f	/**< Con codo recto en 90; ajustar si cambia la mecanica */
+/* 10 cm: la pinza choca a ~9 cm de la base (el enunciado pide 5 cm; la mecanica no llega). */
+#define R_MIN_OP_MM					100.0f	/**< Radio minimo operativo */
 #define R_MAX_OP_MM					395.0f	/**< Margen contra la singularidad de brazo estirado */
 
 /** |cos(theta2)| puede pasarse de 1 por redondeo; mas alla de esto es inalcanzable. */
@@ -103,6 +116,26 @@
 #define PLAN_LIM_ITER				10
 /** Ticks seguidos sin poder avanzar antes de abortar el movimiento. */
 #define PLAN_TICKS_ATASCO			50
+
+/* ------------------------------------------------------------------------- */
+/* Encoders AS5600 (uno por bus I2C: hombro en I2C1, codo en I2C2)           */
+/*   theta = ENC_SIGN * normalizar(lectura - ENC_ZERO), en (-180, 180]       */
+/* ------------------------------------------------------------------------- */
+
+/* [CONFIRMAR] se calibran a mano con el comando ANGLE (ver README, prueba de E4a):
+ * ENCx_ZERO_DEG es lo que lee el encoder con el brazo recto apuntando a +X (theta = 0);
+ * ENCx_SIGN es +1 si la lectura crece al girar la junta en sentido antihorario. */
+#define ENC1_ZERO_DEG				0.0f	/**< [CONFIRMAR] lectura del AS5600 del hombro con theta1 = 0 */
+#define ENC1_SIGN					1.0f	/**< [CONFIRMAR] */
+#define ENC2_ZERO_DEG				0.0f	/**< [CONFIRMAR] lectura del AS5600 del codo con theta2 = 0 */
+#define ENC2_SIGN					1.0f	/**< [CONFIRMAR] */
+
+#define I2C_FRECUENCIA_HZ			400000U	/**< Modo rapido */
+/** Tiempo maximo de espera de cada bandera del I2C. Una lectura completa del AS5600 tarda
+ *  ~0,15 ms; si el sensor no contesta, la funcion vuelve con error en este tiempo. */
+#define I2C_TIMEOUT_MS				2U
+/** Vueltas de espera entre flancos al destrabar el bus a mano (unos pocos us a 96 MHz). */
+#define I2C_RECUP_VUELTAS			200U
 
 /* ------------------------------------------------------------------------- */
 /* Consola (USART1)                                                          */

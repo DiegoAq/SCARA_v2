@@ -82,4 +82,17 @@ bool Cinematica_JuntasEnLimites(float th1_deg, float th2_deg);
  */
 float Cinematica_NormalizarDeg(float ang_deg);
 
+/**
+ * @brief Convierte la lectura de un encoder absoluto en angulo de junta.
+ *
+ * theta = signo * normalizar(enc_deg - cero_deg). La resta se normaliza antes de aplicar
+ * el signo, asi el cruce 0/360 del encoder no produce un salto en la junta.
+ *
+ * @param enc_deg Lectura del encoder (grados, 0..360).
+ * @param cero_deg Lectura del encoder con la junta en theta = 0.
+ * @param signo +1 si la lectura crece en sentido antihorario; -1 si decrece.
+ * @return Angulo de junta en (-180, 180].
+ */
+float Cinematica_JuntaDesdeEncoder(float enc_deg, float cero_deg, float signo);
+
 #endif /* CINEMATICA_H */

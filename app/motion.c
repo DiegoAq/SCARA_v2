@@ -1,11 +1,27 @@
 /**
  * @file motion.c
- * @brief Estado del movimiento y tick de control (etapa E2: parametros y medicion del tick).
+ * @brief Estado del movimiento, tick de control y lectura de las juntas con los AS5600.
  */
 #include "motion.h"
 
+#include <stddef.h>
+
+#include "as5600.h"
+#include "cinematica.h"
 #include "config.h"
 #include "systick.h"
+
+/** Encoder de cada junta: bus I2C (cableado fijo) y calibracion de config.h. */
+typedef struct {
+	i2c_bus_t bus;
+	float cero_deg;
+	float signo;
+} encoder_cfg_t;
+
+static const encoder_cfg_t encoders[JUNTA_CANT] = {
+	[JUNTA_HOMBRO] = { I2C_BUS_1, ENC1_ZERO_DEG, ENC1_SIGN },
+	[JUNTA_CODO]   = { I2C_BUS_2, ENC2_ZERO_DEG, ENC2_SIGN },
+};
 
 static motion_estado_t estado;
 static float velocidad_mm_s;
@@ -22,6 +38,39 @@ void Motion_Init(void)
 	aceleracion_mm_s2 = ACCEL_DEFAULT_MM_S2;
 	periodo_max_ms = 0U;
 	hubo_tick = false;
+
+	/* Si un encoder no contesta no se frena el arranque: la consola lo informa
+	 * (STATUS, RAW) y cada lectura posterior vuelve a intentar. */
+	for (int j = 0; j < JUNTA_CANT; j++) {
+		(void)AS5600_Init(encoders[j].bus);
+	}
+}
+
+bool Motion_LeerJuntaMedida(junta_id_t junta, float *enc_deg, float *theta_deg)
+{
+	float lectura;
+
+	if (junta >= JUNTA_CANT || !AS5600_LeerAngulo(encoders[junta].bus, &lectura)) {
+		return false;
+	}
+	if (enc_deg != NULL) {
+		*enc_deg = lectura;
+	}
+	if (theta_deg != NULL) {
+		*theta_deg = Cinematica_JuntaDesdeEncoder(lectura, encoders[junta].cero_deg,
+												  encoders[junta].signo);
+	}
+	return true;
+}
+
+bool Motion_LeerEncoderCrudo(junta_id_t junta, uint16_t *cuentas)
+{
+	return junta < JUNTA_CANT && AS5600_LeerCuentas(encoders[junta].bus, cuentas);
+}
+
+as5600_iman_t Motion_EstadoIman(junta_id_t junta)
+{
+	return (junta < JUNTA_CANT) ? AS5600_EstadoIman(encoders[junta].bus) : AS5600_SIN_RESPUESTA;
 }
 
 void Motion_Tick(void)

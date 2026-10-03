@@ -2,8 +2,8 @@
  * @file test_planificador.c
  * @brief Tests en PC del pre-vuelo y del perfil de movimiento (criterios de E1).
  *
- * Los puntos de prueba suponen la mecanica por defecto de config.h
- * (L1 = L2 = 200 mm, juntas en +-90, anillo 285..395 mm).
+ * Los puntos de prueba suponen la mecanica de config.h al 2026-10-03: L1 = L2 = 200 mm,
+ * theta1 en [-90, 90], theta2 en [0, 152] (solo rama +), anillo operativo 100..395 mm.
  */
 #include <assert.h>
 #include <math.h>
@@ -18,6 +18,11 @@
 #define TOL_RECTA_MM	0.01f	/* criterio de E1: desviacion maxima de la recta */
 #define TOL_DESTINO_MM	1.0e-3f
 #define TOL_REL			0.01f	/* holgura de redondeo al comparar contra un tope */
+
+/* Velocidad y aceleracion altas para forzar el limite articular. Son del test: no
+ * dependen de los topes de los comandos SPEED/ACCEL, que el equipo ajusta en config.h. */
+#define V_RAPIDA_MM_S	150.0f
+#define A_RAPIDA_MM_S2	500.0f
 
 /** Lo que se mide al simular un movimiento completo. */
 typedef struct {
@@ -164,21 +169,21 @@ static void test_limite_articular(void)
 
 	postura(395.0f, 0.0f, CIN_RAMA_POS, &th1, &th2);
 	assert(Planificador_Preparar(&p, th1, th2, 300.0f, 0.0f,
-								 SPEED_MAX_MM_S, ACCEL_MAX_MM_S2) == PLAN_OK);
+								 V_RAPIDA_MM_S, A_RAPIDA_MM_S2) == PLAN_OK);
 
 	medicion_t m = correr(&p, -1);
 
 	assert(m.resultado == PLAN_PASO_FIN);
 	assert(m.w_max_dps <= JOINT_VMAX_DPS * 1.0001f);
 	assert(m.w_max_dps > JOINT_VMAX_DPS * 0.9f);	/* el limite realmente actuo */
-	assert(m.v_pico_mm_s < SPEED_MAX_MM_S);			/* ...y freno el avance */
+	assert(m.v_pico_mm_s < V_RAPIDA_MM_S);			/* ...y freno el avance */
 	assert(m.desv_max_mm < TOL_RECTA_MM);
 	assert(m.s_monotono && m.rama_constante);
 	assert(hypotf(m.x_fin - 300.0f, m.y_fin) < TOL_DESTINO_MM);
 
 	printf("OK  limite articular: w max %.2f gr/s (tope %.0f), v pico %.1f de %.0f mm/s, "
 		   "desv max %.1e mm\n", (double)m.w_max_dps, (double)JOINT_VMAX_DPS,
-		   (double)m.v_pico_mm_s, (double)SPEED_MAX_MM_S, (double)m.desv_max_mm);
+		   (double)m.v_pico_mm_s, (double)V_RAPIDA_MM_S, (double)m.desv_max_mm);
 }
 
 /** Partir de HOME (brazo estirado, r = 400 > R_MAX_OP): es la postura de arranque tipica. */
@@ -254,14 +259,15 @@ static void test_rechazos(void)
 	plan_t p = { 0 };
 	const plan_t intacto = p;
 	float th1, th2;
+	ik_sol_t fin;
 	const float v = SPEED_DEFAULT_MM_S;
 	const float a = ACCEL_DEFAULT_MM_S2;
 
 	postura(300.0f, 0.0f, CIN_RAMA_POS, &th1, &th2);
 
-	/* Destino fuera del espacio de trabajo. */
+	/* Destino fuera del espacio de trabajo: lejos, pegado a la base, o mas alla de R_MAX_OP. */
 	assert(Planificador_Preparar(&p, th1, th2, 500.0f, 0.0f, v, a) == PLAN_ERR_RADIO);
-	assert(Planificador_Preparar(&p, th1, th2, 200.0f, 150.0f, v, a) == PLAN_ERR_RADIO);
+	assert(Planificador_Preparar(&p, th1, th2, 50.0f, 50.0f, v, a) == PLAN_ERR_RADIO);
 	assert(Planificador_Preparar(&p, th1, th2, 398.0f, 0.0f, v, a) == PLAN_ERR_RADIO);
 
 	/* Parametros invalidos. */
@@ -270,23 +276,21 @@ static void test_rechazos(void)
 	assert(Planificador_Preparar(NULL, th1, th2, 350.0f, 0.0f, v, a) == PLAN_ERR_PARAM);
 	assert(Planificador_Preparar(&p, th1, th2, NAN, 0.0f, v, a) == PLAN_ERR_PARAM);
 
-	/* Ambos extremos validos EN LA MISMA RAMA, pero la recta pasa por r = 210 mm. */
-	postura(200.0f, 220.0f, CIN_RAMA_POS, &th1, &th2);
-	ik_sol_t fin;
-	assert(Cinematica_InversaRama(220.0f, -200.0f, CIN_RAMA_POS, &fin) == CIN_OK);
-	assert(Planificador_Preparar(&p, th1, th2, 220.0f, -200.0f, v, a) == PLAN_ERR_RADIO);
+	/* Ambos extremos validos, pero la recta pasa a 35 mm de la base (por dentro de
+	 * R_MIN_OP): de r = 200 a -20 grados a r = 200 a 140 grados. */
+	const float ax = 187.94f, ay = -68.40f;
+	const float bx = -153.21f, by = 128.56f;
+	postura(ax, ay, CIN_RAMA_POS, &th1, &th2);
+	assert(Cinematica_PuntoAlcanzable(bx, by));
+	assert(Planificador_Preparar(&p, th1, th2, bx, by, v, a) == PLAN_ERR_RADIO);
 
 	/* El ejemplo del SPEC 7.1: de (0, 300) a (0, -300) cruza la base. */
 	postura(0.0f, 300.0f, CIN_RAMA_POS, &th1, &th2);
-	assert(Cinematica_PuntoAlcanzable(0.0f, -300.0f));
 	assert(Planificador_Preparar(&p, th1, th2, 0.0f, -300.0f, v, a) == PLAN_ERR_RADIO);
 
-	/* Tramo dentro del anillo, pero el destino solo existe en la otra rama de codo:
-	 * se rechaza; no se cambia de rama a mitad de camino. */
-	postura(200.0f, 250.0f, CIN_RAMA_NEG, &th1, &th2);
-	assert(Cinematica_InversaRama(150.0f, 290.0f, CIN_RAMA_POS, &fin) == CIN_OK);
-	assert(Cinematica_InversaRama(150.0f, 290.0f, CIN_RAMA_NEG, &fin) == CIN_ERR_LIMITE);
-	assert(Planificador_Preparar(&p, th1, th2, 150.0f, 290.0f, v, a) == PLAN_ERR_LIMITE);
+	/* Tramo y destino dentro del anillo, pero el hombro tendria que pasar de +90. */
+	assert(Cinematica_InversaRama(-300.0f, 100.0f, CIN_RAMA_POS, &fin) == CIN_ERR_LIMITE);
+	assert(Planificador_Preparar(&p, th1, th2, -300.0f, 100.0f, v, a) == PLAN_ERR_LIMITE);
 
 	/* Ningun rechazo toco el estado. */
 	assert(p.activo == intacto.activo && p.d_mm == intacto.d_mm && p.rama == intacto.rama);
@@ -294,29 +298,39 @@ static void test_rechazos(void)
 	printf("OK  rechazos del pre-vuelo\n");
 }
 
-/** La rama de codo es la de la postura de partida y no cambia. */
+/** La rama de codo se elige una vez y no cambia; con esta mecanica siempre es la +. */
 static void test_rama(void)
 {
 	plan_t p;
 	float th1, th2;
 
-	postura(300.0f, 100.0f, CIN_RAMA_NEG, &th1, &th2);
-	assert(th2 < 0.0f);
+	postura(300.0f, 100.0f, CIN_RAMA_POS, &th1, &th2);
+	assert(th2 > 0.0f);
 	assert(Planificador_Preparar(&p, th1, th2, 300.0f, -100.0f,
 								 SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
-	assert(p.rama == CIN_RAMA_NEG);
+	assert(p.rama == CIN_RAMA_POS);
 
 	medicion_t m = correr(&p, -1);
 	assert(m.resultado == PLAN_PASO_FIN);
 	assert(m.rama_constante);
-	assert(p.th2_deg < 0.0f);
+	assert(p.th2_deg > 0.0f);
 	assert(m.desv_max_mm < TOL_RECTA_MM);
 
-	postura(300.0f, 100.0f, CIN_RAMA_POS, &th1, &th2);
-	assert(Planificador_Preparar(&p, th1, th2, 300.0f, -100.0f,
+	/* Desde HOME (theta2 = 0) las dos ramas coinciden con la postura: tiene que quedar
+	 * la unica que sirve para todo el tramo. */
+	assert(Planificador_Preparar(&p, 0.0f, 0.0f, 300.0f, 100.0f,
 								 SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
 	assert(p.rama == CIN_RAMA_POS);
-	printf("OK  rama de codo fija durante el movimiento\n");
+
+	/* MOVE X200 Y150 del enunciado: alcanzable con el codo rearmado. */
+	postura(300.0f, 0.0f, CIN_RAMA_POS, &th1, &th2);
+	assert(Planificador_Preparar(&p, th1, th2, 200.0f, 150.0f,
+								 SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
+	m = correr(&p, -1);
+	assert(m.resultado == PLAN_PASO_FIN);
+	assert(hypotf(m.x_fin - 200.0f, m.y_fin - 150.0f) < TOL_DESTINO_MM);
+	assert(m.desv_max_mm < TOL_RECTA_MM && m.w_max_dps <= JOINT_VMAX_DPS * 1.0001f);
+	printf("OK  rama de codo fija y MOVE X200 Y150 del enunciado\n");
 }
 
 int main(void)

@@ -20,7 +20,7 @@ TESTS   = test_cinematica$(EXE) test_planificador$(EXE) test_parser$(EXE) test_c
 
 # La consola se prueba con la UART y el SysTick simulados dentro de test_consola.c:
 # de drivers/ solo se usan los headers. microrl es de terceros: se compila sin -Werror.
-CONSOLA     = ../app/console.c ../app/motion.c ../app/parser.c
+CONSOLA     = ../app/console.c ../app/motion.c ../app/parser.c ../app/cinematica.c
 CONSOLA_INC = -I../drivers -I../lib/microrl
 MICRORL_OBJ = microrl.o
 

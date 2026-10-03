@@ -38,6 +38,13 @@ float Cinematica_NormalizarDeg(float ang_deg)
 	return ang_deg;
 }
 
+float Cinematica_JuntaDesdeEncoder(float enc_deg, float cero_deg, float signo)
+{
+	/* Se normaliza otra vez despues del signo: con signo -1, un +180 pasaria a -180,
+	 * que queda fuera de (-180, 180]. */
+	return Cinematica_NormalizarDeg(signo * Cinematica_NormalizarDeg(enc_deg - cero_deg));
+}
+
 bool Cinematica_JuntasEnLimites(float th1_deg, float th2_deg)
 {
 	return dentro_de_limite(th1_deg, JOINT1_MIN_DEG, JOINT1_MAX_DEG)

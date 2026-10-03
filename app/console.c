@@ -8,12 +8,17 @@
 #include <stdio.h>
 
 #include "config.h"
+#include "i2c.h"
 #include "microrl.h"
 #include "motion.h"
 #include "parser.h"
 #include "uart.h"
 
 #define LARGO_RESPUESTA		160
+
+/* Rango de direcciones I2C de 7 bits validas (las demas estan reservadas por la norma). */
+#define I2C_DIR_MIN			0x08U
+#define I2C_DIR_MAX			0x77U
 
 static microrl_t rl;
 static bool reloj_con_hse;
@@ -29,8 +34,10 @@ static const char texto_ayuda[] =
 	"  JOINT q1 q2          juntas a angulos theta (grados)   [E3]" ENDL
 	"  HOME | STOP          ir a HOME | frenar con rampa      [E5]" ENDL
 	"  PULSE n us           pulso crudo a un servo            [E3]" ENDL
-	"  ANGLE | RAW          lectura de los AS5600             [E4]" ENDL
-	"  CALIB | I2CSCAN      calibracion | escaneo I2C         [E4]" ENDL
+	"  ANGLE                angulo de cada encoder y de cada junta (grados)" ENDL
+	"  RAW                  cuentas (0..4095) y estado del iman de cada AS5600" ENDL
+	"  I2CSCAN              direcciones que contestan en cada bus I2C" ENDL
+	"  CALIB                calibracion guiada                [E4]" ENDL
 	"  TRACE ON|OFF         CSV por tick                      [E5]" ENDL
 	"  GRIPPER | ORIENT | ZTEST | SETZ0                       [E7]" ENDL;
 
@@ -53,25 +60,137 @@ static void responder_ok(const char *detalle)
 /** Responde `ERR <codigo> <texto>`. */
 static void responder_error(consola_err_t codigo, const char *texto)
 {
-	char linea[LARGO_RESPUESTA];
+	char prefijo[24];
 
-	(void)snprintf(linea, sizeof(linea), "ERR %d %s" ENDL, (int)codigo, texto);
-	imprimir(linea);
+	/* El texto se manda aparte en vez de copiarlo a otro buffer con "%s": asi no hay
+	 * truncamiento posible, sea cual sea su largo. */
+	(void)snprintf(prefijo, sizeof(prefijo), "ERR %d ", (int)codigo);
+	imprimir(prefijo);
+	imprimir(texto);
+	imprimir(ENDL);
+}
+
+static const char *nombre_iman(as5600_iman_t iman)
+{
+	switch (iman) {
+	case AS5600_IMAN_OK:		return "OK";
+	case AS5600_IMAN_AUSENTE:	return "AUSENTE";
+	case AS5600_IMAN_DEBIL:		return "DEBIL";
+	case AS5600_IMAN_FUERTE:	return "FUERTE";
+	default:					return "SIN_RESPUESTA";
+	}
 }
 
 static void comando_status(void)
 {
 	char linea[LARGO_RESPUESTA];
 
-	/* El maximo del tick se reinicia en cada STATUS: muestra lo peor desde el anterior. */
+	/* El maximo del tick se lee antes de consultar los encoders (si uno no contesta, la
+	 * consulta tarda) y se reinicia: muestra lo peor desde el STATUS anterior. */
 	(void)snprintf(linea, sizeof(linea),
-				   "estado=%s speed=%.1f accel=%.1f tick_max_ms=%lu rx_perdidos=%lu tx_perdidos=%lu reloj=%s",
+				   "OK estado=%s speed=%.1f accel=%.1f tick_max_ms=%lu rx_perdidos=%lu tx_perdidos=%lu reloj=%s",
 				   Motion_NombreEstado(Motion_Estado()),
 				   (double)Motion_Velocidad(), (double)Motion_Aceleracion(),
 				   (unsigned long)Motion_PeriodoTickMaxMs(true),
 				   (unsigned long)UART_BytesPerdidosRx(), (unsigned long)UART_BytesPerdidosTx(),
 				   reloj_con_hse ? "HSE" : "HSI");
+	imprimir(linea);
+	imprimir(" enc1=");
+	imprimir(nombre_iman(Motion_EstadoIman(JUNTA_HOMBRO)));
+	imprimir(" enc2=");
+	imprimir(nombre_iman(Motion_EstadoIman(JUNTA_CODO)));
+	imprimir(ENDL);
+}
+
+/** ANGLE: angulo de cada encoder y de cada junta. Exige iman OK en los dos. */
+static void comando_angle(void)
+{
+	char linea[LARGO_RESPUESTA];
+	float enc[JUNTA_CANT];
+	float theta[JUNTA_CANT];
+
+	for (int j = 0; j < JUNTA_CANT; j++) {
+		as5600_iman_t iman = Motion_EstadoIman((junta_id_t)j);
+
+		if (iman != AS5600_IMAN_OK
+				|| !Motion_LeerJuntaMedida((junta_id_t)j, &enc[j], &theta[j])) {
+			(void)snprintf(linea, sizeof(linea), "encoder %d (%s): %s", j + 1,
+						   (j == JUNTA_HOMBRO) ? "hombro, I2C1" : "codo, I2C2",
+						   (iman == AS5600_IMAN_OK) ? "SIN_RESPUESTA" : nombre_iman(iman));
+			responder_error(ERR_ENCODER, linea);
+			return;
+		}
+	}
+
+	(void)snprintf(linea, sizeof(linea), "enc1=%.2f q1=%.2f enc2=%.2f q2=%.2f",
+				   (double)enc[JUNTA_HOMBRO], (double)theta[JUNTA_HOMBRO],
+				   (double)enc[JUNTA_CODO], (double)theta[JUNTA_CODO]);
 	responder_ok(linea);
+}
+
+/** RAW: cuentas de 12 bits y estado del iman de cada encoder, para diagnostico. */
+static void comando_raw(void)
+{
+	char linea[LARGO_RESPUESTA];
+	char parte[JUNTA_CANT][48];
+	bool todo_ok = true;
+
+	for (int j = 0; j < JUNTA_CANT; j++) {
+		uint16_t cuentas = 0U;
+		as5600_iman_t iman = Motion_EstadoIman((junta_id_t)j);
+
+		if (iman == AS5600_SIN_RESPUESTA || !Motion_LeerEncoderCrudo((junta_id_t)j, &cuentas)) {
+			(void)snprintf(parte[j], sizeof(parte[j]), "raw%d=? iman%d=SIN_RESPUESTA", j + 1, j + 1);
+			todo_ok = false;
+		} else {
+			(void)snprintf(parte[j], sizeof(parte[j]), "raw%d=%u iman%d=%s", j + 1,
+						   (unsigned)cuentas, j + 1, nombre_iman(iman));
+			todo_ok = todo_ok && (iman == AS5600_IMAN_OK);
+		}
+	}
+
+	(void)snprintf(linea, sizeof(linea), "%s %s", parte[JUNTA_HOMBRO], parte[JUNTA_CODO]);
+	if (todo_ok) {
+		responder_ok(linea);
+	} else {
+		responder_error(ERR_ENCODER, linea);
+	}
+}
+
+/**
+ * I2CSCAN: direcciones que contestan en cada bus. Es un comando de diagnostico: recorre
+ * 112 direcciones por bus y puede atrasar algun tick; no usarlo con el brazo en movimiento.
+ */
+static void comando_i2cscan(void)
+{
+	char texto[16];
+
+	imprimir("OK");
+	for (int bus = 0; bus < I2C_CANT_BUSES; bus++) {
+		int encontrados = 0;
+
+		(void)snprintf(texto, sizeof(texto), " i2c%d=", bus + 1);
+		imprimir(texto);
+
+		for (unsigned dir = I2C_DIR_MIN; dir <= I2C_DIR_MAX; dir++) {
+			i2c_res_t r = I2C_Sondear((i2c_bus_t)bus, (uint8_t)dir);
+
+			if (r == I2C_OK) {
+				(void)snprintf(texto, sizeof(texto), "%s0x%02X", (encontrados > 0) ? "," : "", dir);
+				imprimir(texto);
+				encontrados++;
+			} else if (r != I2C_ERR_NACK) {
+				/* Timeout o error de bus: seguir probando serian 2 ms por direccion. */
+				imprimir((encontrados > 0) ? ",BUS_ERROR" : "BUS_ERROR");
+				encontrados = -1;
+				break;
+			}
+		}
+		if (encontrados == 0) {
+			imprimir("ninguno");
+		}
+	}
+	imprimir(ENDL);
 }
 
 static void comando_speed(float valor)
@@ -137,6 +256,15 @@ static int ejecutar(int argc, const char *const *argv)
 		break;
 	case CMD_ACCEL:
 		comando_accel(cmd.valor);
+		break;
+	case CMD_ANGLE:
+		comando_angle();
+		break;
+	case CMD_RAW:
+		comando_raw();
+		break;
+	case CMD_I2CSCAN:
+		comando_i2cscan();
 		break;
 	default:
 		responder_error(ERR_SINTAXIS, "comando no disponible todavia en esta etapa");

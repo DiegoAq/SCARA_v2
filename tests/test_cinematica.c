@@ -2,8 +2,9 @@
  * @file test_cinematica.c
  * @brief Tests en PC de la cinematica directa/inversa (criterios de E1).
  *
- * Los puntos de prueba suponen la mecanica por defecto de config.h
- * (L1 = L2 = 200 mm, juntas en +-90). Si cambia config.h hay que revisarlos.
+ * Los puntos de prueba suponen la mecanica de config.h al 2026-10-03: L1 = L2 = 200 mm,
+ * theta1 en [-90, 90], theta2 en [0, 152] (codo recto en 180 de servo, solo rama +),
+ * anillo operativo 100..395 mm. Si cambia config.h hay que revisarlos.
  */
 #include <assert.h>
 #include <math.h>
@@ -167,12 +168,25 @@ static void test_fuera_de_alcance(void)
 	assert(Cinematica_InversaRama(-300.0f, 0.0f, CIN_RAMA_POS, &s) == CIN_ERR_LIMITE);
 	assert(!Cinematica_PuntoAlcanzable(-300.0f, 0.0f));
 
-	/* MOVE X200 Y150 del enunciado: r = 250 mm, exige |theta2| > 90. */
-	assert(Cinematica_Inversa(200.0f, 150.0f, sol) == 0);
-	assert(!Cinematica_PuntoAlcanzable(200.0f, 150.0f));
+	/* MOVE X200 Y150 del enunciado (r = 250 mm): con el codo rearmado ya es alcanzable. */
+	assert(Cinematica_Inversa(200.0f, 150.0f, sol) == 1);
+	assert(sol[0].rama == CIN_RAMA_POS);
+	assert(cerca(sol[0].th1_deg, -14.45f, 0.06f) && cerca(sol[0].th2_deg, 102.64f, 0.06f));
+	assert(Cinematica_PuntoAlcanzable(200.0f, 150.0f));
+
+	/* La rama negativa no existe con esta mecanica (theta2 >= 0). */
+	assert(Cinematica_InversaRama(300.0f, 0.0f, CIN_RAMA_NEG, &s) == CIN_ERR_LIMITE);
+
+	/* Demasiado cerca de la base: el codo no pliega tanto (theta2 > 152). */
+	assert(Cinematica_Inversa(50.0f, 50.0f, sol) == 0);
+	assert(!Cinematica_PuntoAlcanzable(50.0f, 50.0f));
+
+	/* Lado derecho: el punto existe, pero el hombro tendria que pasar de -90. */
+	assert(Cinematica_Inversa(0.0f, -300.0f, sol) == 0);
+	assert(!Cinematica_PuntoAlcanzable(0.0f, -300.0f));
 
 	/* Geometricamente alcanzable pero fuera del anillo operativo. */
-	assert(Cinematica_Inversa(398.0f, 0.0f, sol) == 2);
+	assert(Cinematica_Inversa(398.0f, 0.0f, sol) == 1);
 	assert(!Cinematica_PuntoAlcanzable(398.0f, 0.0f));
 	assert(!Cinematica_PuntoAlcanzable(0.0f, 0.0f));
 
@@ -221,8 +235,31 @@ static void test_limites_y_normalizacion(void)
 
 	assert(Cinematica_ExcesoRadio(300.0f, 0.0f) == 0.0f);
 	assert(cerca(Cinematica_ExcesoRadio(400.0f, 0.0f), 400.0f - R_MAX_OP_MM, 1e-3f));
-	assert(cerca(Cinematica_ExcesoRadio(0.0f, 200.0f), R_MIN_OP_MM - 200.0f, 1e-3f));
+	assert(cerca(Cinematica_ExcesoRadio(0.0f, R_MIN_OP_MM / 2.0f), R_MIN_OP_MM / 2.0f, 1e-3f));
 	printf("OK  limites y normalizacion\n");
+}
+
+/** Lectura del AS5600 (0..360) -> angulo de junta, incluido el cruce 0/360. */
+static void test_junta_desde_encoder(void)
+{
+	/* Cero en 100: 130 de encoder son +30 de junta; con signo -1, -30. */
+	assert(cerca(Cinematica_JuntaDesdeEncoder(130.0f, 100.0f, 1.0f), 30.0f, 1e-4f));
+	assert(cerca(Cinematica_JuntaDesdeEncoder(130.0f, 100.0f, -1.0f), -30.0f, 1e-4f));
+	assert(cerca(Cinematica_JuntaDesdeEncoder(100.0f, 100.0f, 1.0f), 0.0f, 1e-4f));
+
+	/* Cruce 0/360: cero en 350, el encoder pasa de 359,9 a 0,1 sin que la junta salte. */
+	assert(cerca(Cinematica_JuntaDesdeEncoder(359.9f, 350.0f, 1.0f), 9.9f, 1e-3f));
+	assert(cerca(Cinematica_JuntaDesdeEncoder(0.1f, 350.0f, 1.0f), 10.1f, 1e-3f));
+	assert(cerca(Cinematica_JuntaDesdeEncoder(20.0f, 350.0f, 1.0f), 30.0f, 1e-3f));
+	assert(cerca(Cinematica_JuntaDesdeEncoder(340.0f, 10.0f, 1.0f), -30.0f, 1e-3f));
+	assert(cerca(Cinematica_JuntaDesdeEncoder(340.0f, 10.0f, -1.0f), 30.0f, 1e-3f));
+
+	/* Siempre en (-180, 180]. */
+	for (float enc = 0.0f; enc < 360.0f; enc += 7.3f) {
+		float th = Cinematica_JuntaDesdeEncoder(enc, 123.0f, -1.0f);
+		assert(th > -180.0f && th <= 180.0f);
+	}
+	printf("OK  junta desde encoder (cruce 0/360)\n");
 }
 
 int main(void)
@@ -235,6 +272,7 @@ int main(void)
 	test_fuera_de_alcance();
 	test_singularidad();
 	test_limites_y_normalizacion();
+	test_junta_desde_encoder();
 	printf("test_cinematica: TODO OK\n");
 	return 0;
 }

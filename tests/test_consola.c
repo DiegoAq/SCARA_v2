@@ -53,6 +53,52 @@ uint32_t UART_BytesPerdidosTx(void) { return 0U; }
 bool SysTick_Init(void) { return true; }
 uint32_t Millis(void) { return ms_simulado; }
 
+/* ---- AS5600 e I2C simulados ---------------------------------------------- */
+
+static bool enc_presente[I2C_CANT_BUSES] = { true, true };
+static bool bus_trabado[I2C_CANT_BUSES];
+static uint16_t enc_cuentas[I2C_CANT_BUSES];
+static as5600_iman_t enc_iman[I2C_CANT_BUSES];
+
+i2c_res_t I2C_Init(i2c_bus_t bus) { (void)bus; return I2C_OK; }
+
+i2c_res_t I2C_Sondear(i2c_bus_t bus, uint8_t dir7)
+{
+	if (bus_trabado[bus]) {
+		return I2C_ERR_TIMEOUT;
+	}
+	return (enc_presente[bus] && dir7 == AS5600_DIRECCION) ? I2C_OK : I2C_ERR_NACK;
+}
+
+bool AS5600_Init(i2c_bus_t bus) { return enc_presente[bus]; }
+
+bool AS5600_LeerCuentas(i2c_bus_t bus, uint16_t *cuentas)
+{
+	if (!enc_presente[bus]) {
+		return false;
+	}
+	*cuentas = enc_cuentas[bus];
+	return true;
+}
+
+bool AS5600_LeerAngulo(i2c_bus_t bus, float *grados)
+{
+	uint16_t c;
+
+	if (!AS5600_LeerCuentas(bus, &c)) {
+		return false;
+	}
+	*grados = (float)c * (360.0f / (float)AS5600_CUENTAS_VUELTA);
+	return true;
+}
+
+as5600_iman_t AS5600_EstadoIman(i2c_bus_t bus)
+{
+	return enc_presente[bus] ? enc_iman[bus] : AS5600_SIN_RESPUESTA;
+}
+
+bool AS5600_ImanOK(i2c_bus_t bus) { return AS5600_EstadoIman(bus) == AS5600_IMAN_OK; }
+
 /* ---- Ayudas -------------------------------------------------------------- */
 
 /** "Tipea" un texto, procesa todo lo recibido y devuelve lo que respondio la consola. */
@@ -116,7 +162,8 @@ static void test_status(void)
 
 	assert(strstr(r, "OK estado=IDLE speed=30.0 accel=80.0") != NULL);
 	assert(strstr(r, "reloj=HSE") != NULL);
-	assert(contar(r, "OK ") == 1);
+	assert(strstr(r, "enc1=OK enc2=OK\r\n") != NULL);
+	assert(contar(r, "OK estado") == 1);
 	const char *linea = strstr(r, "OK estado");
 	printf("OK  STATUS: %.*s\n", (int)strcspn(linea, "\r\n"), linea);
 }
@@ -126,17 +173,17 @@ static void test_speed_accel(void)
 	Motion_Init();
 	assert(strstr(tipear("speed 50\r"), "OK speed=50.0") != NULL);
 	assert(strstr(tipear("SPEED 12.5\r"), "OK speed=12.5") != NULL);
-	assert(strstr(tipear("speed 9999\r"), "ERR 6 speed fuera de [1.0, 150.0] mm/s") != NULL);
+	assert(strstr(tipear("speed 9999\r"), "ERR 6 speed fuera de [") != NULL);
 	assert(strstr(tipear("speed 0\r"), "ERR 6") != NULL);
 	assert(strstr(tipear("speed\r"), "ERR 1") != NULL);
 	assert(strstr(tipear("speed rapido\r"), "ERR 1") != NULL);
 	assert(Motion_Velocidad() == 12.5f);	/* los rechazos no tocaron el valor */
 
-	assert(strstr(tipear("accel 200\r"), "OK accel=200.0") != NULL);
+	assert(strstr(tipear("accel 120\r"), "OK accel=120.0") != NULL);
 	assert(strstr(tipear("accel 1\r"), "ERR 6 accel fuera de") != NULL);
-	assert(Motion_Aceleracion() == 200.0f);
+	assert(Motion_Aceleracion() == 120.0f);
 
-	assert(strstr(tipear("status\r"), "speed=12.5 accel=200.0") != NULL);
+	assert(strstr(tipear("status\r"), "speed=12.5 accel=120.0") != NULL);
 	printf("OK  SPEED y ACCEL con topes\n");
 }
 
@@ -191,10 +238,10 @@ static void test_pegar(void)
 	/* Una linea de 100 caracteres valida (con espacios de relleno) se ejecuta entera. */
 	char linea[128];
 	memset(linea, ' ', sizeof(linea));
-	memcpy(linea, "speed 77", 8);
+	memcpy(linea, "speed 44", 8);
 	linea[100] = '\r';
 	linea[101] = '\0';
-	assert(strstr(tipear(linea), "OK speed=77.0") != NULL);
+	assert(strstr(tipear(linea), "OK speed=44.0") != NULL);
 	printf("OK  pegar 5 lineas de 100 caracteres\n");
 }
 
@@ -210,6 +257,46 @@ static void test_log_asincrono(void)
 	/* Lo tipeado sigue en la linea: completar el comando funciona. */
 	assert(strstr(tipear("ed 20\r"), "OK speed=20.0") != NULL);
 	printf("OK  mensaje asincrono sin romper lo tipeado\n");
+}
+
+/** ANGLE, RAW e I2CSCAN con los encoders simulados. */
+static void test_encoders(void)
+{
+	char esperado[128];
+
+	/* 1024 cuentas = 90 grados; 3072 = 270. El angulo de junta sale de ENCx_ZERO/SIGN. */
+	enc_cuentas[I2C_BUS_1] = 1024U;
+	enc_cuentas[I2C_BUS_2] = 3072U;
+	float q1, q2;
+	assert(Motion_LeerJuntaMedida(JUNTA_HOMBRO, NULL, &q1));
+	assert(Motion_LeerJuntaMedida(JUNTA_CODO, NULL, &q2));
+	(void)snprintf(esperado, sizeof(esperado), "OK enc1=90.00 q1=%.2f enc2=270.00 q2=%.2f\r\n",
+				   (double)q1, (double)q2);
+	assert(strstr(tipear("angle\r"), esperado) != NULL);
+	assert(strstr(tipear("RAW\r"), "OK raw1=1024 iman1=OK raw2=3072 iman2=OK\r\n") != NULL);
+	assert(strstr(tipear("i2cscan\r"), "OK i2c1=0x36 i2c2=0x36\r\n") != NULL);
+
+	/* Iman flojo en el hombro: RAW lo muestra, ANGLE no entrega un angulo dudoso. */
+	enc_iman[I2C_BUS_1] = AS5600_IMAN_DEBIL;
+	assert(strstr(tipear("angle\r"), "ERR 5 encoder 1 (hombro, I2C1): DEBIL\r\n") != NULL);
+	assert(strstr(tipear("raw\r"), "ERR 5 raw1=1024 iman1=DEBIL raw2=3072 iman2=OK\r\n") != NULL);
+	assert(strstr(tipear("status\r"), "enc1=DEBIL enc2=OK") != NULL);
+	enc_iman[I2C_BUS_1] = AS5600_IMAN_OK;
+
+	/* Encoder del codo desconectado. */
+	enc_presente[I2C_BUS_2] = false;
+	assert(strstr(tipear("angle\r"), "ERR 5 encoder 2 (codo, I2C2): SIN_RESPUESTA\r\n") != NULL);
+	assert(strstr(tipear("raw\r"), "ERR 5 raw1=1024 iman1=OK raw2=? iman2=SIN_RESPUESTA\r\n") != NULL);
+	assert(strstr(tipear("i2cscan\r"), "OK i2c1=0x36 i2c2=ninguno\r\n") != NULL);
+	assert(strstr(tipear("status\r"), "enc1=OK enc2=SIN_RESPUESTA") != NULL);
+	enc_presente[I2C_BUS_2] = true;
+
+	/* Bus trabado: el escaneo corta en la primera direccion en vez de insistir. */
+	bus_trabado[I2C_BUS_1] = true;
+	assert(strstr(tipear("i2cscan\r"), "OK i2c1=BUS_ERROR i2c2=0x36\r\n") != NULL);
+	bus_trabado[I2C_BUS_1] = false;
+
+	printf("OK  ANGLE, RAW e I2CSCAN\n");
 }
 
 static void test_tick(void)
@@ -239,6 +326,7 @@ int main(void)
 	test_fines_de_linea();
 	test_pegar();
 	test_log_asincrono();
+	test_encoders();
 	test_tick();
 	printf("test_consola: TODO OK\n");
 	return 0;
