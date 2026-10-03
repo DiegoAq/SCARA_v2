@@ -16,8 +16,7 @@
 /* Geometria                                                                 */
 /* ------------------------------------------------------------------------- */
 
-/* [CONFIRMAR] medir centro a centro de eje; pocos mm de error aca son una causa
- * clasica de imprecision en el MOVE. */
+/* [CONFIRMADO 2026-10-03] L1 = L2 = 200mm, centro a centro de eje. */
 #define L1_MM						200.0f	/**< Eslabon 1: eje hombro -> eje codo */
 #define L2_MM						200.0f	/**< Eslabon 2: eje codo -> efector */
 
@@ -35,8 +34,7 @@
 #define SHOULDER_SERVO_MIN_DEG		0.0f	/**< [CONFIRMAR] tope mecanico inferior, en angulo de servo */
 #define SHOULDER_SERVO_MAX_DEG		180.0f	/**< [CONFIRMAR] tope mecanico superior, en angulo de servo */
 
-/* [CONFIRMAR] convencion de codo. Si se rearma para que el brazo recto quede en
- * 180 de servo: ELBOW_ZERO_SERVO_DEG = 180 => theta2 en [-180, 0], y ajustar R_MIN_OP_MM. */
+/* [CONFIRMADO 2026-10-03] brazo recto con el codo en 90 de servo (default del SPEC). */
 #define ELBOW_ZERO_SERVO_DEG		90.0f	/**< Angulo de servo con el brazo recto (theta2 = 0) */
 #define ELBOW_SIGN					1.0f
 #define ELBOW_SERVO_MIN_DEG			0.0f	/**< [CONFIRMAR] */
@@ -78,10 +76,14 @@
 
 #define SPEED_DEFAULT_MM_S			30.0f
 #define SPEED_MIN_MM_S				1.0f	/**< Tope inferior del comando SPEED */
-#define SPEED_MAX_MM_S				150.0f	/**< [CONFIRMAR] tope superior del comando SPEED */
+/* [CONFIRMADO 2026-10-03] bajado de 150 a 50 mm/s para las primeras pruebas fisicas;
+ * subir una vez validado el comportamiento real del brazo armado. */
+#define SPEED_MAX_MM_S				50.0f	/**< Tope superior del comando SPEED */
 #define ACCEL_DEFAULT_MM_S2			80.0f
 #define ACCEL_MIN_MM_S2				5.0f	/**< Tope inferior del comando ACCEL */
-#define ACCEL_MAX_MM_S2				500.0f	/**< [CONFIRMAR] tope superior del comando ACCEL */
+/* [CONFIRMADO 2026-10-03] bajado de 500 a 150 mm/s2 para las primeras pruebas fisicas;
+ * subir una vez validado el comportamiento real del brazo armado. */
+#define ACCEL_MAX_MM_S2				150.0f	/**< Tope superior del comando ACCEL */
 
 /** Tope de velocidad por junta. Red de seguridad contra rotura de servos: nada
  *  (MOVE, JOINT, PULSE, HOME, arranque) mueve una junta mas rapido que esto. */
