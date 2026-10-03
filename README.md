@@ -99,6 +99,9 @@ tocar el imán, no la afecta.
 | b | Desde (a), girar solo el hombro unos 45° hacia la **izquierda** (antihorario) | `enc1` = ______ |
 | c | Volver a (a) y plegar solo el codo unos 45° (se pliega en sentido antihorario) | `enc2` = ______ |
 
+En (b) y (c) el giro es **a ojo**: solo sirve para ver si la lectura sube o baja, no importa si son 30° o 60°.
+El único paso que pide precisión es el (a).
+
 Con eso, editar `app/config.h`:
 
 - `ENC1_ZERO_DEG` = `enc1` del paso (a). `ENC2_ZERO_DEG` = `enc2` del paso (a).
