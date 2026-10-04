@@ -67,9 +67,11 @@ Las pruebas de E0 (reloj y LED) y E2 (consola) ya pasaron; esta es la única pen
    `ninguno` = el sensor no contesta (alimentación, SCL/SDA cruzados). `BUS_ERROR` = línea en corto o sin pull-ups.
 2. `RAW` → `OK raw1=<0..4095> iman1=OK raw2=<0..4095> iman2=OK`.
    `DEBIL` = imán lejos; `FUERTE` = imán muy cerca; `AUSENTE` = sin imán. Ajustar la distancia (0,5 a 3 mm) hasta `OK`.
-3. Ruido: con el brazo quieto, repetir `RAW` 10 veces (flecha arriba + Enter). Cada lectura no debe moverse más de
-   ±3 cuentas (0,3°). Anotar mínimo y máximo de cada una.
-4. Girar cada junta a mano de tope a tope repitiendo `RAW`: la lectura debe cambiar de forma continua
+3. Ruido: con el brazo quieto, repetir `RAW` 10 veces (flecha arriba + Enter), o usar `RAW LIVE`
+   (repite una línea cada 150 ms hasta que se aprieta cualquier tecla; bloquea el loop principal,
+   no usar con los servos alimentados). Cada lectura no debe moverse más de ±3 cuentas (0,3°).
+   Anotar mínimo y máximo de cada una.
+4. Girar cada junta a mano de tope a tope con `RAW LIVE`: la lectura debe cambiar de forma continua
    (el paso de 4095 a 0 es normal).
 5. `STATUS` → `enc1=OK enc2=OK` y `tick_max_ms` en 20 o 21.
 

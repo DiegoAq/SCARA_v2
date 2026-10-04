@@ -4,6 +4,7 @@
  */
 #include "console.h"
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -12,9 +13,13 @@
 #include "microrl.h"
 #include "motion.h"
 #include "parser.h"
+#include "systick.h"
 #include "uart.h"
 
 #define LARGO_RESPUESTA		160
+
+/** Periodo entre lineas del modo en vivo de RAW (diagnostico, no es un parametro fisico). */
+#define RAW_LIVE_PERIODO_MS	150U
 
 /* Rango de direcciones I2C de 7 bits validas (las demas estan reservadas por la norma). */
 #define I2C_DIR_MIN			0x08U
@@ -35,7 +40,7 @@ static const char texto_ayuda[] =
 	"  HOME | STOP          ir a HOME | frenar con rampa      [E5]" ENDL
 	"  PULSE n us           pulso crudo a un servo            [E3]" ENDL
 	"  ANGLE                angulo de cada encoder y de cada junta (grados)" ENDL
-	"  RAW                  cuentas (0..4095) y estado del iman de cada AS5600" ENDL
+	"  RAW [LIVE]            cuentas y estado del iman; LIVE repite en vivo" ENDL
 	"  I2CSCAN              direcciones que contestan en cada bus I2C" ENDL
 	"  CALIB                calibracion guiada                [E4]" ENDL
 	"  TRACE ON|OFF         CSV por tick                      [E5]" ENDL
@@ -128,10 +133,11 @@ static void comando_angle(void)
 	responder_ok(linea);
 }
 
-/** RAW: cuentas de 12 bits y estado del iman de cada encoder, para diagnostico. */
-static void comando_raw(void)
+/** Una lectura de los dos canales; comun a RAW y a RAW LIVE.
+ *  @return true si los dos imanes estan OK (linea para responder_ok); false si alguno
+ *  no esta OK (linea para responder_error). */
+static bool leer_raw(char *linea, size_t largo)
 {
-	char linea[LARGO_RESPUESTA];
 	char parte[JUNTA_CANT][48];
 	bool todo_ok = true;
 
@@ -149,12 +155,48 @@ static void comando_raw(void)
 		}
 	}
 
-	(void)snprintf(linea, sizeof(linea), "%s %s", parte[JUNTA_HOMBRO], parte[JUNTA_CODO]);
-	if (todo_ok) {
-		responder_ok(linea);
-	} else {
-		responder_error(ERR_ENCODER, linea);
+	(void)snprintf(linea, largo, "%s %s", parte[JUNTA_HOMBRO], parte[JUNTA_CODO]);
+	return todo_ok;
+}
+
+/**
+ * RAW: cuentas de 12 bits y estado del iman de cada encoder, para diagnostico.
+ *
+ * RAW LIVE: igual, pero repite una linea cada RAW_LIVE_PERIODO_MS hasta que llega
+ * cualquier byte por UART. Bloquea el loop principal (no hay Motion_Tick ni se atiende
+ * otro comando) mientras dura: solo para calibracion a mano, no con los servos alimentados.
+ */
+static void comando_raw(bool en_vivo)
+{
+	char linea[LARGO_RESPUESTA];
+
+	if (!en_vivo) {
+		if (leer_raw(linea, sizeof(linea))) {
+			responder_ok(linea);
+		} else {
+			responder_error(ERR_ENCODER, linea);
+		}
+		return;
 	}
+
+	imprimir("RAW en vivo, cualquier tecla para salir" ENDL);
+	uint32_t t_ultimo = Millis() - RAW_LIVE_PERIODO_MS;	/* imprime la primera ya */
+	for (;;) {
+		uint8_t byte;
+
+		if (UART_LeerByte(&byte)) {
+			break;
+		}
+		if ((uint32_t)(Millis() - t_ultimo) < RAW_LIVE_PERIODO_MS) {
+			continue;
+		}
+		t_ultimo += RAW_LIVE_PERIODO_MS;
+
+		(void)leer_raw(linea, sizeof(linea));
+		imprimir(linea);
+		imprimir(ENDL);
+	}
+	responder_ok("fin");
 }
 
 /**
@@ -261,7 +303,7 @@ static int ejecutar(int argc, const char *const *argv)
 		comando_angle();
 		break;
 	case CMD_RAW:
-		comando_raw();
+		comando_raw(cmd.activar);
 		break;
 	case CMD_I2CSCAN:
 		comando_i2cscan();

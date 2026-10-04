@@ -238,6 +238,16 @@ static parser_res_t leer_argumentos(int n, const char *const *arg, comando_t *cm
 		}
 		return PARSER_OK;
 
+	case CMD_RAW:
+		if (n == 0) {
+			cmd->activar = false;
+		} else if (n == 1 && igual_sin_caja(arg[0], "LIVE")) {
+			cmd->activar = true;
+		} else {
+			return (n == 1) ? PARSER_ERR_ARGUMENTO : PARSER_ERR_CANT_ARGS;
+		}
+		return PARSER_OK;
+
 	case CMD_GRIPPER:
 		if (n != 1) {
 			return PARSER_ERR_CANT_ARGS;

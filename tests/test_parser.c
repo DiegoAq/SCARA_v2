@@ -95,6 +95,11 @@ static void test_otros(void)
 	assert(INTERPRETAR(&c, "TRACE", "OFF") == PARSER_OK && !c.activar);
 	assert(INTERPRETAR(&c, "TRACE", "1") == PARSER_ERR_ARGUMENTO);
 
+	assert(INTERPRETAR(&c, "RAW") == PARSER_OK && c.id == CMD_RAW && !c.activar);
+	assert(INTERPRETAR(&c, "RAW", "live") == PARSER_OK && c.id == CMD_RAW && c.activar);
+	assert(INTERPRETAR(&c, "RAW", "1") == PARSER_ERR_ARGUMENTO);
+	assert(INTERPRETAR(&c, "RAW", "LIVE", "extra") == PARSER_ERR_CANT_ARGS);
+
 	assert(INTERPRETAR(&c, "GRIPPER", "open") == PARSER_OK && c.gripper == GRIPPER_ABRIR);
 	assert(INTERPRETAR(&c, "GRIPPER", "CLOSE") == PARSER_OK && c.gripper == GRIPPER_CERRAR);
 	assert(INTERPRETAR(&c, "GRIPPER", "35") == PARSER_OK);
@@ -104,7 +109,7 @@ static void test_otros(void)
 
 	static const struct { const char *txt; cmd_id_t id; } simples[] = {
 		{ "HELP", CMD_HELP }, { "home", CMD_HOME }, { "Stop", CMD_STOP },
-		{ "STATUS", CMD_STATUS }, { "ANGLE", CMD_ANGLE }, { "RAW", CMD_RAW },
+		{ "STATUS", CMD_STATUS }, { "ANGLE", CMD_ANGLE },
 		{ "CALIB", CMD_CALIB }, { "i2cscan", CMD_I2CSCAN }, { "ZTEST", CMD_ZTEST },
 		{ "SETZ0", CMD_SETZ0 },
 	};
