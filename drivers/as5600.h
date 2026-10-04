@@ -1,10 +1,18 @@
 /**
  * @file as5600.h
- * @brief Encoder magnetico absoluto AS5600 (12 bits, I2C, direccion fija 0x36).
+ * @brief Encoder magnetico absoluto AS5600 leido por su salida analogica OUT.
  *
- * Los dos AS5600 tienen la misma direccion, por eso va uno en cada bus:
- * hombro en I2C1 y codo en I2C2. Este driver entrega la lectura cruda del sensor;
- * la conversion a angulo de junta (cero y signo) se hace en motion.
+ * La salida OUT entrega 0 V .. VDD para 0 .. 360 grados. Se lee con el ADC1:
+ * hombro en PB0 (IN8) y codo en PB1 (IN9). El sensor debe alimentarse con 3,3 V,
+ * la misma tension que la referencia del ADC.
+ *
+ * Limitaciones frente a la lectura por I2C:
+ *  - No se puede consultar el estado del iman (ausente / debil / fuerte) ni detectar un
+ *    cable suelto: un pin al aire da lecturas al azar. Se controla mirando el ruido (RAW).
+ *  - En el cruce 0/360 la salida salta de VDD a 0 V. El promedio lo tiene en cuenta, pero
+ *    conviene montar el iman para que el cruce quede fuera del recorrido de la junta.
+ *
+ * Este driver entrega la lectura cruda; la conversion a angulo de junta se hace en motion.
  */
 #ifndef AS5600_H
 #define AS5600_H
@@ -12,48 +20,35 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "i2c.h"
+#define AS5600_CUENTAS_VUELTA	4096U	/**< Cuentas del ADC por vuelta (0,088 grados por cuenta) */
 
-#define AS5600_DIRECCION		0x36U
-#define AS5600_CUENTAS_VUELTA	4096U	/**< 12 bits: 0,088 grados por cuenta */
-
-/** Estado del iman, segun el registro STATUS. */
+/** Sensores disponibles. */
 typedef enum {
-	AS5600_IMAN_OK = 0,		/**< Detectado y con campo dentro de rango (MD=1, ML=0, MH=0) */
-	AS5600_IMAN_AUSENTE,	/**< MD=0: no hay iman */
-	AS5600_IMAN_DEBIL,		/**< ML=1: iman muy lejos o muy debil */
-	AS5600_IMAN_FUERTE,		/**< MH=1: iman muy cerca o muy fuerte */
-	AS5600_SIN_RESPUESTA	/**< El sensor no contesta por I2C */
-} as5600_iman_t;
+	AS5600_HOMBRO = 0,	/**< OUT en PB0 */
+	AS5600_CODO,		/**< OUT en PB1 */
+	AS5600_CANT
+} as5600_id_t;
 
 /**
- * @brief Inicializa el bus y verifica que el sensor conteste.
- * @return false si el bus no se pudo inicializar o no hay respuesta en 0x36.
+ * @brief Inicializa el ADC. Llamar despues de SysTick_Init().
  */
-bool AS5600_Init(i2c_bus_t bus);
+void AS5600_Init(void);
 
 /**
- * @brief Lee el angulo en cuentas (registro ANGLE, 0x0E/0x0F).
+ * @brief Lee la posicion en cuentas, promediando ENC_MUESTRAS conversiones.
+ * @param sensor Sensor a leer.
  * @param cuentas Salida: 0..4095.
- * @return false si fallo la comunicacion. No verifica el iman.
+ * @param dispersion Salida opcional (puede ser NULL): maximo menos minimo de las muestras
+ *                   promediadas, en cuentas. Mide el ruido de la lectura.
+ * @return false si el ADC no contesto.
  */
-bool AS5600_LeerCuentas(i2c_bus_t bus, uint16_t *cuentas);
+bool AS5600_LeerCuentas(as5600_id_t sensor, uint16_t *cuentas, uint16_t *dispersion);
 
 /**
- * @brief Lee el angulo en grados.
- * @param grados Salida: 0 <= grados < 360, resolucion 0,088.
- * @return false si fallo la comunicacion. No verifica el iman.
+ * @brief Lee la posicion en grados.
+ * @param grados Salida: 0 <= grados < 360.
+ * @return false si el ADC no contesto.
  */
-bool AS5600_LeerAngulo(i2c_bus_t bus, float *grados);
-
-/**
- * @brief Estado del iman (registro STATUS, 0x0B).
- */
-as5600_iman_t AS5600_EstadoIman(i2c_bus_t bus);
-
-/**
- * @brief true si el iman esta detectado y dentro de rango. Verificar antes de confiar en la lectura.
- */
-bool AS5600_ImanOK(i2c_bus_t bus);
+bool AS5600_LeerAngulo(as5600_id_t sensor, float *grados);
 
 #endif /* AS5600_H */

@@ -118,8 +118,8 @@
 #define PLAN_TICKS_ATASCO			50
 
 /* ------------------------------------------------------------------------- */
-/* Encoders AS5600 (uno por bus I2C: hombro en I2C1, codo en I2C2)           */
-/*   theta = ENC_SIGN * normalizar(lectura - ENC_ZERO), en (-180, 180]       */
+/* Encoders AS5600 por salida analogica (hombro en PB0, codo en PB1)         */
+/*   theta = ENC_ESCALA * ENC_SIGN * normalizar(lectura - ENC_ZERO)          */
 /* ------------------------------------------------------------------------- */
 
 /* [CONFIRMAR] se calibran a mano con el comando ANGLE (ver README, prueba de E4a):
@@ -129,6 +129,19 @@
 #define ENC1_SIGN					1.0f	/**< [CONFIRMAR] */
 #define ENC2_ZERO_DEG				0.0f	/**< [CONFIRMAR] lectura del AS5600 del codo con theta2 = 0 */
 #define ENC2_SIGN					1.0f	/**< [CONFIRMAR] */
+
+/* [CONFIRMAR] correccion de ganancia. La salida analogica no llega justo a 0 V ni a VDD, asi
+ * que una vuelta no son exactamente 4096 cuentas. Se ajusta en la verificacion del README:
+ * ESCALA = angulo real / angulo que muestra ANGLE (p. ej. 90 / 88,5 = 1,017). */
+#define ENC1_ESCALA					1.0f	/**< [CONFIRMAR] */
+#define ENC2_ESCALA					1.0f	/**< [CONFIRMAR] */
+
+/** Conversiones del ADC que se promedian por lectura (16 x 6,5 us = 0,1 ms por encoder). */
+#define ENC_MUESTRAS				16U
+/** Tiempo maximo de espera de una conversion del ADC (tarda ~7 us). */
+#define ADC_TIMEOUT_MS				2U
+
+/* I2C: los AS5600 ya no lo usan. El driver queda para el VL53L0X y para I2CSCAN. */
 
 #define I2C_FRECUENCIA_HZ			400000U	/**< Modo rapido */
 /** Tiempo maximo de espera de cada bandera del I2C. Una lectura completa del AS5600 tarda

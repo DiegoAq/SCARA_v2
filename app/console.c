@@ -35,7 +35,7 @@ static const char texto_ayuda[] =
 	"  HOME | STOP          ir a HOME | frenar con rampa      [E5]" ENDL
 	"  PULSE n us           pulso crudo a un servo            [E3]" ENDL
 	"  ANGLE                angulo de cada encoder y de cada junta (grados)" ENDL
-	"  RAW                  cuentas (0..4095) y estado del iman de cada AS5600" ENDL
+	"  RAW                  cuentas del ADC (0..4095) y ruido de cada encoder" ENDL
 	"  I2CSCAN              direcciones que contestan en cada bus I2C" ENDL
 	"  CALIB                calibracion guiada                [E4]" ENDL
 	"  TRACE ON|OFF         CSV por tick                      [E5]" ENDL
@@ -70,39 +70,22 @@ static void responder_error(consola_err_t codigo, const char *texto)
 	imprimir(ENDL);
 }
 
-static const char *nombre_iman(as5600_iman_t iman)
-{
-	switch (iman) {
-	case AS5600_IMAN_OK:		return "OK";
-	case AS5600_IMAN_AUSENTE:	return "AUSENTE";
-	case AS5600_IMAN_DEBIL:		return "DEBIL";
-	case AS5600_IMAN_FUERTE:	return "FUERTE";
-	default:					return "SIN_RESPUESTA";
-	}
-}
-
 static void comando_status(void)
 {
 	char linea[LARGO_RESPUESTA];
 
-	/* El maximo del tick se lee antes de consultar los encoders (si uno no contesta, la
-	 * consulta tarda) y se reinicia: muestra lo peor desde el STATUS anterior. */
+	/* El maximo del tick se reinicia en cada STATUS: muestra lo peor desde el anterior. */
 	(void)snprintf(linea, sizeof(linea),
-				   "OK estado=%s speed=%.1f accel=%.1f tick_max_ms=%lu rx_perdidos=%lu tx_perdidos=%lu reloj=%s",
+				   "estado=%s speed=%.1f accel=%.1f tick_max_ms=%lu rx_perdidos=%lu tx_perdidos=%lu reloj=%s",
 				   Motion_NombreEstado(Motion_Estado()),
 				   (double)Motion_Velocidad(), (double)Motion_Aceleracion(),
 				   (unsigned long)Motion_PeriodoTickMaxMs(true),
 				   (unsigned long)UART_BytesPerdidosRx(), (unsigned long)UART_BytesPerdidosTx(),
 				   reloj_con_hse ? "HSE" : "HSI");
-	imprimir(linea);
-	imprimir(" enc1=");
-	imprimir(nombre_iman(Motion_EstadoIman(JUNTA_HOMBRO)));
-	imprimir(" enc2=");
-	imprimir(nombre_iman(Motion_EstadoIman(JUNTA_CODO)));
-	imprimir(ENDL);
+	responder_ok(linea);
 }
 
-/** ANGLE: angulo de cada encoder y de cada junta. Exige iman OK en los dos. */
+/** ANGLE: angulo de cada encoder (0..360) y de cada junta. */
 static void comando_angle(void)
 {
 	char linea[LARGO_RESPUESTA];
@@ -110,14 +93,8 @@ static void comando_angle(void)
 	float theta[JUNTA_CANT];
 
 	for (int j = 0; j < JUNTA_CANT; j++) {
-		as5600_iman_t iman = Motion_EstadoIman((junta_id_t)j);
-
-		if (iman != AS5600_IMAN_OK
-				|| !Motion_LeerJuntaMedida((junta_id_t)j, &enc[j], &theta[j])) {
-			(void)snprintf(linea, sizeof(linea), "encoder %d (%s): %s", j + 1,
-						   (j == JUNTA_HOMBRO) ? "hombro, I2C1" : "codo, I2C2",
-						   (iman == AS5600_IMAN_OK) ? "SIN_RESPUESTA" : nombre_iman(iman));
-			responder_error(ERR_ENCODER, linea);
+		if (!Motion_LeerJuntaMedida((junta_id_t)j, &enc[j], &theta[j])) {
+			responder_error(ERR_ENCODER, "el ADC no responde");
 			return;
 		}
 	}
@@ -128,38 +105,34 @@ static void comando_angle(void)
 	responder_ok(linea);
 }
 
-/** RAW: cuentas de 12 bits y estado del iman de cada encoder, para diagnostico. */
+/**
+ * RAW: cuentas del ADC (0..4095) de cada encoder y el ruido de la lectura (maximo menos
+ * minimo de las conversiones promediadas). Por ADC no hay otra forma de ver si el sensor
+ * anda bien: un cable suelto o un iman mal puesto se nota como ruido alto.
+ */
 static void comando_raw(void)
 {
 	char linea[LARGO_RESPUESTA];
-	char parte[JUNTA_CANT][48];
-	bool todo_ok = true;
+	uint16_t cuentas[JUNTA_CANT];
+	uint16_t ruido[JUNTA_CANT];
 
 	for (int j = 0; j < JUNTA_CANT; j++) {
-		uint16_t cuentas = 0U;
-		as5600_iman_t iman = Motion_EstadoIman((junta_id_t)j);
-
-		if (iman == AS5600_SIN_RESPUESTA || !Motion_LeerEncoderCrudo((junta_id_t)j, &cuentas)) {
-			(void)snprintf(parte[j], sizeof(parte[j]), "raw%d=? iman%d=SIN_RESPUESTA", j + 1, j + 1);
-			todo_ok = false;
-		} else {
-			(void)snprintf(parte[j], sizeof(parte[j]), "raw%d=%u iman%d=%s", j + 1,
-						   (unsigned)cuentas, j + 1, nombre_iman(iman));
-			todo_ok = todo_ok && (iman == AS5600_IMAN_OK);
+		if (!Motion_LeerEncoderCrudo((junta_id_t)j, &cuentas[j], &ruido[j])) {
+			responder_error(ERR_ENCODER, "el ADC no responde");
+			return;
 		}
 	}
 
-	(void)snprintf(linea, sizeof(linea), "%s %s", parte[JUNTA_HOMBRO], parte[JUNTA_CODO]);
-	if (todo_ok) {
-		responder_ok(linea);
-	} else {
-		responder_error(ERR_ENCODER, linea);
-	}
+	(void)snprintf(linea, sizeof(linea), "raw1=%u ruido1=%u raw2=%u ruido2=%u",
+				   (unsigned)cuentas[JUNTA_HOMBRO], (unsigned)ruido[JUNTA_HOMBRO],
+				   (unsigned)cuentas[JUNTA_CODO], (unsigned)ruido[JUNTA_CODO]);
+	responder_ok(linea);
 }
 
 /**
- * I2CSCAN: direcciones que contestan en cada bus. Es un comando de diagnostico: recorre
- * 112 direcciones por bus y puede atrasar algun tick; no usarlo con el brazo en movimiento.
+ * I2CSCAN: direcciones que contestan en cada bus. Los encoders ya no usan I2C; queda como
+ * diagnostico para el VL53L0X. Recorre 112 direcciones por bus y puede atrasar algun tick:
+ * no usarlo con el brazo en movimiento. El bus se inicializa aca porque nadie mas lo usa.
  */
 static void comando_i2cscan(void)
 {
@@ -171,6 +144,10 @@ static void comando_i2cscan(void)
 
 		(void)snprintf(texto, sizeof(texto), " i2c%d=", bus + 1);
 		imprimir(texto);
+		if (I2C_Init((i2c_bus_t)bus) != I2C_OK) {
+			imprimir("BUS_ERROR");
+			continue;
+		}
 
 		for (unsigned dir = I2C_DIR_MIN; dir <= I2C_DIR_MAX; dir++) {
 			i2c_res_t r = I2C_Sondear((i2c_bus_t)bus, (uint8_t)dir);

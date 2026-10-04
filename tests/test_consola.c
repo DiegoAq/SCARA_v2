@@ -9,8 +9,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "adc.h"
+#include "as5600.h"
 #include "config.h"
 #include "console.h"
+#include "i2c.h"
 #include "motion.h"
 #include "systick.h"
 #include "uart.h"
@@ -53,51 +56,45 @@ uint32_t UART_BytesPerdidosTx(void) { return 0U; }
 bool SysTick_Init(void) { return true; }
 uint32_t Millis(void) { return ms_simulado; }
 
-/* ---- AS5600 e I2C simulados ---------------------------------------------- */
+/* ---- ADC e I2C simulados -------------------------------------------------- */
 
-static bool enc_presente[I2C_CANT_BUSES] = { true, true };
-static bool bus_trabado[I2C_CANT_BUSES];
-static uint16_t enc_cuentas[I2C_CANT_BUSES];
-static as5600_iman_t enc_iman[I2C_CANT_BUSES];
+#define LARGO_PATRON	4U
 
-i2c_res_t I2C_Init(i2c_bus_t bus) { (void)bus; return I2C_OK; }
+static bool adc_ok = true;
+static int adc_valor[AS5600_CANT];		/* tension de cada canal, en cuentas */
+static const int *adc_ruido;			/* ruido sumado muestra a muestra (NULL = ninguno) */
+static unsigned adc_muestra;
+
+void ADC_Init(void) {}
+
+bool ADC_LeerCanal(uint8_t canal, uint16_t *cuentas)
+{
+	if (!adc_ok) {
+		return false;
+	}
+	int v = adc_valor[(canal == ADC_CANAL_PB0) ? AS5600_HOMBRO : AS5600_CODO];
+	if (adc_ruido != NULL) {
+		v += adc_ruido[adc_muestra++ % LARGO_PATRON];
+	}
+	/* Como el sensor real: pasarse de 4095 es volver a empezar desde 0, y al reves. */
+	*cuentas = (uint16_t)((v + (int)AS5600_CUENTAS_VUELTA) % (int)AS5600_CUENTAS_VUELTA);
+	return true;
+}
+
+#define DIR_VL53L0X		0x29U
+
+static bool i2c_dispositivo[I2C_CANT_BUSES];	/* hay algo en 0x29 */
+static bool i2c_trabado[I2C_CANT_BUSES];
+
+i2c_res_t I2C_Init(i2c_bus_t bus)
+{
+	return i2c_trabado[bus] ? I2C_ERR_BUS : I2C_OK;
+}
 
 i2c_res_t I2C_Sondear(i2c_bus_t bus, uint8_t dir7)
 {
-	if (bus_trabado[bus]) {
-		return I2C_ERR_TIMEOUT;
-	}
-	return (enc_presente[bus] && dir7 == AS5600_DIRECCION) ? I2C_OK : I2C_ERR_NACK;
+	return (i2c_dispositivo[bus] && dir7 == DIR_VL53L0X) ? I2C_OK : I2C_ERR_NACK;
 }
-
-bool AS5600_Init(i2c_bus_t bus) { return enc_presente[bus]; }
-
-bool AS5600_LeerCuentas(i2c_bus_t bus, uint16_t *cuentas)
-{
-	if (!enc_presente[bus]) {
-		return false;
-	}
-	*cuentas = enc_cuentas[bus];
-	return true;
-}
-
-bool AS5600_LeerAngulo(i2c_bus_t bus, float *grados)
-{
-	uint16_t c;
-
-	if (!AS5600_LeerCuentas(bus, &c)) {
-		return false;
-	}
-	*grados = (float)c * (360.0f / (float)AS5600_CUENTAS_VUELTA);
-	return true;
-}
-
-as5600_iman_t AS5600_EstadoIman(i2c_bus_t bus)
-{
-	return enc_presente[bus] ? enc_iman[bus] : AS5600_SIN_RESPUESTA;
-}
-
-bool AS5600_ImanOK(i2c_bus_t bus) { return AS5600_EstadoIman(bus) == AS5600_IMAN_OK; }
 
 /* ---- Ayudas -------------------------------------------------------------- */
 
@@ -162,7 +159,7 @@ static void test_status(void)
 
 	assert(strstr(r, "OK estado=IDLE speed=30.0 accel=80.0") != NULL);
 	assert(strstr(r, "reloj=HSE") != NULL);
-	assert(strstr(r, "enc1=OK enc2=OK\r\n") != NULL);
+	assert(strstr(r, "reloj=HSE\r\n") != NULL);
 	assert(contar(r, "OK estado") == 1);
 	const char *linea = strstr(r, "OK estado");
 	printf("OK  STATUS: %.*s\n", (int)strcspn(linea, "\r\n"), linea);
@@ -259,44 +256,64 @@ static void test_log_asincrono(void)
 	printf("OK  mensaje asincrono sin romper lo tipeado\n");
 }
 
-/** ANGLE, RAW e I2CSCAN con los encoders simulados. */
+/** ANGLE y RAW con el ADC simulado: promedio, ruido y cruce 0/360. */
 static void test_encoders(void)
 {
 	char esperado[128];
+	float q1, q2, enc;
 
-	/* 1024 cuentas = 90 grados; 3072 = 270. El angulo de junta sale de ENCx_ZERO/SIGN. */
-	enc_cuentas[I2C_BUS_1] = 1024U;
-	enc_cuentas[I2C_BUS_2] = 3072U;
-	float q1, q2;
+	/* 1024 cuentas = 90 grados; 3072 = 270. El angulo de junta sale de ENCx_ZERO/SIGN/ESCALA. */
+	adc_valor[AS5600_HOMBRO] = 1024;
+	adc_valor[AS5600_CODO] = 3072;
 	assert(Motion_LeerJuntaMedida(JUNTA_HOMBRO, NULL, &q1));
 	assert(Motion_LeerJuntaMedida(JUNTA_CODO, NULL, &q2));
 	(void)snprintf(esperado, sizeof(esperado), "OK enc1=90.00 q1=%.2f enc2=270.00 q2=%.2f\r\n",
 				   (double)q1, (double)q2);
 	assert(strstr(tipear("angle\r"), esperado) != NULL);
-	assert(strstr(tipear("RAW\r"), "OK raw1=1024 iman1=OK raw2=3072 iman2=OK\r\n") != NULL);
-	assert(strstr(tipear("i2cscan\r"), "OK i2c1=0x36 i2c2=0x36\r\n") != NULL);
+	assert(strstr(tipear("RAW\r"), "OK raw1=1024 ruido1=0 raw2=3072 ruido2=0\r\n") != NULL);
 
-	/* Iman flojo en el hombro: RAW lo muestra, ANGLE no entrega un angulo dudoso. */
-	enc_iman[I2C_BUS_1] = AS5600_IMAN_DEBIL;
-	assert(strstr(tipear("angle\r"), "ERR 5 encoder 1 (hombro, I2C1): DEBIL\r\n") != NULL);
-	assert(strstr(tipear("raw\r"), "ERR 5 raw1=1024 iman1=DEBIL raw2=3072 iman2=OK\r\n") != NULL);
-	assert(strstr(tipear("status\r"), "enc1=DEBIL enc2=OK") != NULL);
-	enc_iman[I2C_BUS_1] = AS5600_IMAN_OK;
+	/* Ruido de +-2 cuentas: el promedio no se corre y RAW informa la dispersion. */
+	static const int ruido_chico[LARGO_PATRON] = { -2, 1, 2, -1 };
+	adc_ruido = ruido_chico;
+	adc_muestra = 0U;
+	assert(strstr(tipear("raw\r"), "OK raw1=1024 ruido1=4 raw2=3072 ruido2=4\r\n") != NULL);
 
-	/* Encoder del codo desconectado. */
-	enc_presente[I2C_BUS_2] = false;
-	assert(strstr(tipear("angle\r"), "ERR 5 encoder 2 (codo, I2C2): SIN_RESPUESTA\r\n") != NULL);
-	assert(strstr(tipear("raw\r"), "ERR 5 raw1=1024 iman1=OK raw2=? iman2=SIN_RESPUESTA\r\n") != NULL);
-	assert(strstr(tipear("i2cscan\r"), "OK i2c1=0x36 i2c2=ninguno\r\n") != NULL);
-	assert(strstr(tipear("status\r"), "enc1=OK enc2=SIN_RESPUESTA") != NULL);
-	enc_presente[I2C_BUS_2] = true;
+	/* Justo en el cruce 0/360: las muestras caen en 4093, 3, 4094 y 2. Promediadas tal
+	 * cual darian ~2048 (media vuelta de error); tiene que dar 0 y una dispersion chica. */
+	static const int ruido_cruce[LARGO_PATRON] = { -3, 3, -2, 2 };
+	adc_valor[AS5600_HOMBRO] = 0;
+	adc_ruido = ruido_cruce;
+	adc_muestra = 0U;
+	assert(strstr(tipear("raw\r"), "OK raw1=0 ruido1=6 ") != NULL);
+	adc_muestra = 0U;
+	assert(AS5600_LeerAngulo(AS5600_HOMBRO, &enc));
+	assert(enc < 0.2f || enc > 359.8f);
+	adc_ruido = NULL;
+	adc_valor[AS5600_HOMBRO] = 1024;
 
-	/* Bus trabado: el escaneo corta en la primera direccion en vez de insistir. */
-	bus_trabado[I2C_BUS_1] = true;
-	assert(strstr(tipear("i2cscan\r"), "OK i2c1=BUS_ERROR i2c2=0x36\r\n") != NULL);
-	bus_trabado[I2C_BUS_1] = false;
+	/* ADC que no termina la conversion. */
+	adc_ok = false;
+	assert(strstr(tipear("angle\r"), "ERR 5 el ADC no responde\r\n") != NULL);
+	assert(strstr(tipear("raw\r"), "ERR 5 el ADC no responde\r\n") != NULL);
+	adc_ok = true;
 
-	printf("OK  ANGLE, RAW e I2CSCAN\n");
+	printf("OK  ANGLE y RAW por ADC (promedio, ruido, cruce 0/360)\n");
+}
+
+/** I2CSCAN: ya no hay encoders en el bus; queda para el VL53L0X. */
+static void test_i2cscan(void)
+{
+	assert(strstr(tipear("i2cscan\r"), "OK i2c1=ninguno i2c2=ninguno\r\n") != NULL);
+
+	i2c_dispositivo[I2C_BUS_1] = true;
+	assert(strstr(tipear("i2cscan\r"), "OK i2c1=0x29 i2c2=ninguno\r\n") != NULL);
+	i2c_dispositivo[I2C_BUS_1] = false;
+
+	i2c_trabado[I2C_BUS_2] = true;
+	assert(strstr(tipear("i2cscan\r"), "OK i2c1=ninguno i2c2=BUS_ERROR\r\n") != NULL);
+	i2c_trabado[I2C_BUS_2] = false;
+
+	printf("OK  I2CSCAN\n");
 }
 
 static void test_tick(void)
@@ -327,6 +344,7 @@ int main(void)
 	test_pegar();
 	test_log_asincrono();
 	test_encoders();
+	test_i2cscan();
 	test_tick();
 	printf("test_consola: TODO OK\n");
 	return 0;

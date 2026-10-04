@@ -18,9 +18,9 @@ NUCLEO  = ../app/cinematica.c ../app/planificador.c ../app/parser.c
 HEADERS = $(wildcard ../app/*.h)
 TESTS   = test_cinematica$(EXE) test_planificador$(EXE) test_parser$(EXE) test_consola$(EXE)
 
-# La consola se prueba con la UART y el SysTick simulados dentro de test_consola.c:
-# de drivers/ solo se usan los headers. microrl es de terceros: se compila sin -Werror.
-CONSOLA     = ../app/console.c ../app/motion.c ../app/parser.c ../app/cinematica.c
+# La consola se prueba con la UART, el SysTick, el ADC y el I2C simulados dentro de
+# test_consola.c. De drivers/ solo se compila as5600.c, que no toca registros. microrl es de terceros: se compila sin -Werror.
+CONSOLA     = ../app/console.c ../app/motion.c ../app/parser.c ../app/cinematica.c ../drivers/as5600.c
 CONSOLA_INC = -I../drivers -I../lib/microrl
 MICRORL_OBJ = microrl.o
 
