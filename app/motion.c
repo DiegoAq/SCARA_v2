@@ -11,17 +11,16 @@
 #include "config.h"
 #include "systick.h"
 
-/** Encoder de cada junta: sensor (cableado fijo) y calibracion de config.h. */
+/** Encoder de cada junta: bus I2C (cableado fijo) y calibracion de config.h. */
 typedef struct {
-	as5600_id_t sensor;
+	i2c_bus_t bus;
 	float cero_deg;
 	float signo;
-	float escala;
 } encoder_cfg_t;
 
 static const encoder_cfg_t encoders[JUNTA_CANT] = {
-	[JUNTA_HOMBRO] = { AS5600_HOMBRO, ENC1_ZERO_DEG, ENC1_SIGN, ENC1_ESCALA },
-	[JUNTA_CODO]   = { AS5600_CODO,   ENC2_ZERO_DEG, ENC2_SIGN, ENC2_ESCALA },
+	[JUNTA_HOMBRO] = { I2C_BUS_1, ENC1_ZERO_DEG, ENC1_SIGN },
+	[JUNTA_CODO]   = { I2C_BUS_2, ENC2_ZERO_DEG, ENC2_SIGN },
 };
 
 static motion_estado_t estado;
@@ -40,30 +39,38 @@ void Motion_Init(void)
 	periodo_max_ms = 0U;
 	hubo_tick = false;
 
-	AS5600_Init();
+	/* Si un encoder no contesta no se frena el arranque: la consola lo informa
+	 * (STATUS, RAW) y cada lectura posterior vuelve a intentar. */
+	for (int j = 0; j < JUNTA_CANT; j++) {
+		(void)AS5600_Init(encoders[j].bus);
+	}
 }
 
 bool Motion_LeerJuntaMedida(junta_id_t junta, float *enc_deg, float *theta_deg)
 {
 	float lectura;
 
-	if (junta >= JUNTA_CANT || !AS5600_LeerAngulo(encoders[junta].sensor, &lectura)) {
+	if (junta >= JUNTA_CANT || !AS5600_LeerAngulo(encoders[junta].bus, &lectura)) {
 		return false;
 	}
 	if (enc_deg != NULL) {
 		*enc_deg = lectura;
 	}
 	if (theta_deg != NULL) {
-		*theta_deg = encoders[junta].escala
-				   * Cinematica_JuntaDesdeEncoder(lectura, encoders[junta].cero_deg,
+		*theta_deg = Cinematica_JuntaDesdeEncoder(lectura, encoders[junta].cero_deg,
 												  encoders[junta].signo);
 	}
 	return true;
 }
 
-bool Motion_LeerEncoderCrudo(junta_id_t junta, uint16_t *cuentas, uint16_t *dispersion)
+bool Motion_LeerEncoderCrudo(junta_id_t junta, uint16_t *cuentas)
 {
-	return junta < JUNTA_CANT && AS5600_LeerCuentas(encoders[junta].sensor, cuentas, dispersion);
+	return junta < JUNTA_CANT && AS5600_LeerCuentas(encoders[junta].bus, cuentas);
+}
+
+as5600_iman_t Motion_EstadoIman(junta_id_t junta)
+{
+	return (junta < JUNTA_CANT) ? AS5600_EstadoIman(encoders[junta].bus) : AS5600_SIN_RESPUESTA;
 }
 
 void Motion_Tick(void)
