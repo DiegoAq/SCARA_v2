@@ -18,9 +18,10 @@ NUCLEO  = ../app/cinematica.c ../app/planificador.c ../app/parser.c
 HEADERS = $(wildcard ../app/*.h)
 TESTS   = test_cinematica$(EXE) test_planificador$(EXE) test_parser$(EXE) test_consola$(EXE)
 
-# La consola se prueba con la UART y el SysTick simulados dentro de test_consola.c:
-# de drivers/ solo se usan los headers. microrl es de terceros: se compila sin -Werror.
-CONSOLA     = ../app/console.c ../app/motion.c ../app/parser.c ../app/cinematica.c
+# La consola y el movimiento se prueban con el hardware simulado dentro de test_consola.c
+# (UART, SysTick, PWM, AS5600, I2C). De drivers/ solo se compila servo.c, que no toca registros. microrl es de terceros: se compila sin -Werror.
+CONSOLA     = ../app/console.c ../app/motion.c ../app/parser.c ../app/cinematica.c \
+              ../app/planificador.c ../drivers/servo.c
 CONSOLA_INC = -I../drivers -I../lib/microrl
 MICRORL_OBJ = microrl.o
 

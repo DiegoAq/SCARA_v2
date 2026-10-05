@@ -37,7 +37,14 @@ int main(void)
 		 * re-leer Millis: asi el periodo no acumula el atraso del loop. */
 		if ((uint32_t)(Millis() - t_tick) >= TICK_MS) {
 			t_tick += TICK_MS;
+			/* Si algo freno el loop mas de un periodo (p. ej. RAW LIVE), los ticks perdidos
+			 * se descartan. Ejecutarlos todos juntos para "recuperar" moveria el brazo de
+			 * golpe todo lo atrasado, salteando el limite de velocidad de los servos. */
+			if ((uint32_t)(Millis() - t_tick) >= TICK_MS) {
+				t_tick = Millis();
+			}
 			Motion_Tick();
+			Consola_DespuesDelTick();
 		}
 
 		if ((uint32_t)(Millis() - t_led) >= semiperiodo_ms) {

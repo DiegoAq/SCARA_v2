@@ -2,8 +2,10 @@
  * @file test_planificador.c
  * @brief Tests en PC del pre-vuelo y del perfil de movimiento (criterios de E1).
  *
- * Los puntos de prueba suponen la mecanica de config.h al 2026-10-03: L1 = L2 = 200 mm,
- * theta1 en [-90, 90], theta2 en [0, 152] (solo rama +), anillo operativo 100..395 mm.
+ * Los puntos estan en un marco LOCAL: +X local es la direccion en la que apunta el brazo
+ * en HOME (HOME_TH1_DEG) y +Y local queda a su izquierda; frente() los pasa al marco del
+ * robot. Suponen: L1 = L2 = 200 mm, hombro +-90 alrededor de HOME, codo +-90, anillo
+ * operativo 285..395 mm.
  */
 #include <assert.h>
 #include <math.h>
@@ -38,14 +40,43 @@ typedef struct {
 	plan_paso_t resultado;
 } medicion_t;
 
-/** Postura de partida: IK de un punto en una rama. */
-static void postura(float x, float y, int rama, float *th1, float *th2)
+/** Pasa un punto del marco local (frente = +X local) al marco del robot. */
+static void frente(float xl, float yl, float *x, float *y)
 {
+	const float rad = HOME_TH1_DEG * 0.017453292519943295f;
+
+	*x = xl * cosf(rad) - yl * sinf(rad);
+	*y = xl * sinf(rad) + yl * cosf(rad);
+}
+
+/** Postura de partida: IK de un punto local en una rama. */
+static void postura(float xl, float yl, int rama, float *th1, float *th2)
+{
+	float x, y;
 	ik_sol_t sol;
 
+	frente(xl, yl, &x, &y);
 	assert(Cinematica_InversaRama(x, y, rama, &sol) == CIN_OK);
 	*th1 = sol.th1_deg;
 	*th2 = sol.th2_deg;
+}
+
+/** Planificador_Preparar con el destino dado en el marco local. */
+static plan_res_t preparar(plan_t *p, float th1, float th2, float xl, float yl, float v, float a)
+{
+	float x, y;
+
+	frente(xl, yl, &x, &y);
+	return Planificador_Preparar(p, th1, th2, x, y, v, a);
+}
+
+/** Distancia (mm) entre un punto del robot y un punto dado en el marco local. */
+static float distancia_a(float x, float y, float xl, float yl)
+{
+	float xe, ye;
+
+	frente(xl, yl, &xe, &ye);
+	return hypotf(x - xe, y - ye);
 }
 
 /**
@@ -109,7 +140,7 @@ static void test_perfil_trapezoidal(void)
 	const float a = ACCEL_DEFAULT_MM_S2;
 
 	postura(300.0f, -100.0f, CIN_RAMA_POS, &th1, &th2);
-	assert(Planificador_Preparar(&p, th1, th2, 300.0f, 100.0f, v, a) == PLAN_OK);
+	assert(preparar(&p, th1, th2, 300.0f, 100.0f, v, a) == PLAN_OK);
 	assert(fabsf(p.d_mm - 200.0f) < 1e-2f);
 
 	medicion_t m = correr(&p, -1);
@@ -118,7 +149,7 @@ static void test_perfil_trapezoidal(void)
 	assert(!p.activo && !p.detenido);
 	assert(m.s_monotono && m.rama_constante);
 	assert(m.desv_max_mm < TOL_RECTA_MM);
-	assert(hypotf(m.x_fin - 300.0f, m.y_fin - 100.0f) < TOL_DESTINO_MM);
+	assert(distancia_a(m.x_fin, m.y_fin, 300.0f, 100.0f) < TOL_DESTINO_MM);
 
 	/* Crucero a v, rampas de 'a' en la subida y en la bajada. */
 	assert(fabsf(m.v_pico_mm_s - v) < v * TOL_REL);
@@ -144,8 +175,7 @@ static void test_tramo_corto(void)
 	float th1, th2;
 
 	postura(300.0f, 0.0f, CIN_RAMA_POS, &th1, &th2);
-	assert(Planificador_Preparar(&p, th1, th2, 302.0f, 0.0f,
-								 SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
+	assert(preparar(&p, th1, th2, 302.0f, 0.0f, SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
 
 	medicion_t m = correr(&p, -1);
 
@@ -153,11 +183,11 @@ static void test_tramo_corto(void)
 	assert(m.v_pico_mm_s < SPEED_DEFAULT_MM_S);
 	assert(m.acel_max_mm_s2 <= ACCEL_DEFAULT_MM_S2 * (1.0f + TOL_REL));
 	assert(m.frenado_max_mm_s2 <= ACCEL_DEFAULT_MM_S2 * (1.0f + TOL_REL));
-	assert(hypotf(m.x_fin - 302.0f, m.y_fin) < TOL_DESTINO_MM);
+	assert(distancia_a(m.x_fin, m.y_fin, 302.0f, 0.0f) < TOL_DESTINO_MM);
 
 	/* Por debajo de MOVE_DIST_MIN_MM no hay movimiento. */
-	assert(Planificador_Preparar(&p, th1, th2, 300.05f, 0.0f,
-								 SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_YA_EN_DESTINO);
+	assert(preparar(&p, th1, th2, 300.05f, 0.0f,
+					SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_YA_EN_DESTINO);
 	printf("OK  tramo corto (triangular) y distancia nula\n");
 }
 
@@ -168,8 +198,7 @@ static void test_limite_articular(void)
 	float th1, th2;
 
 	postura(395.0f, 0.0f, CIN_RAMA_POS, &th1, &th2);
-	assert(Planificador_Preparar(&p, th1, th2, 300.0f, 0.0f,
-								 V_RAPIDA_MM_S, A_RAPIDA_MM_S2) == PLAN_OK);
+	assert(preparar(&p, th1, th2, 300.0f, 0.0f, V_RAPIDA_MM_S, A_RAPIDA_MM_S2) == PLAN_OK);
 
 	medicion_t m = correr(&p, -1);
 
@@ -179,20 +208,20 @@ static void test_limite_articular(void)
 	assert(m.v_pico_mm_s < V_RAPIDA_MM_S);			/* ...y freno el avance */
 	assert(m.desv_max_mm < TOL_RECTA_MM);
 	assert(m.s_monotono && m.rama_constante);
-	assert(hypotf(m.x_fin - 300.0f, m.y_fin) < TOL_DESTINO_MM);
+	assert(distancia_a(m.x_fin, m.y_fin, 300.0f, 0.0f) < TOL_DESTINO_MM);
 
 	printf("OK  limite articular: w max %.2f gr/s (tope %.0f), v pico %.1f de %.0f mm/s, "
 		   "desv max %.1e mm\n", (double)m.w_max_dps, (double)JOINT_VMAX_DPS,
 		   (double)m.v_pico_mm_s, (double)V_RAPIDA_MM_S, (double)m.desv_max_mm);
 }
 
-/** Partir de HOME (brazo estirado, r = 400 > R_MAX_OP): es la postura de arranque tipica. */
+/** Partir de HOME (brazo estirado, r = 400 > R_MAX_OP): es la postura de arranque. */
 static void test_desde_home(void)
 {
 	plan_t p;
 
-	assert(Planificador_Preparar(&p, 0.0f, 0.0f, 300.0f, 100.0f,
-								 SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
+	assert(preparar(&p, HOME_TH1_DEG, HOME_TH2_DEG, 300.0f, 100.0f,
+					SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
 
 	medicion_t m = correr(&p, -1);
 
@@ -200,11 +229,11 @@ static void test_desde_home(void)
 	assert(m.w_max_dps <= JOINT_VMAX_DPS * 1.0001f);
 	assert(m.desv_max_mm < TOL_RECTA_MM);
 	assert(m.s_monotono && m.rama_constante);
-	assert(hypotf(m.x_fin - 300.0f, m.y_fin - 100.0f) < TOL_DESTINO_MM);
+	assert(distancia_a(m.x_fin, m.y_fin, 300.0f, 100.0f) < TOL_DESTINO_MM);
 
 	/* Desde afuera del anillo solo se puede entrar: alejarse mas se rechaza. */
-	assert(Planificador_Preparar(&p, 0.0f, 0.0f, 396.0f, 50.0f,
-								 SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_ERR_RADIO);
+	assert(preparar(&p, HOME_TH1_DEG, HOME_TH2_DEG, 396.0f, 50.0f,
+					SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_ERR_RADIO);
 
 	printf("OK  salida desde HOME: %d ticks, w max %.2f gr/s, desv max %.1e mm\n",
 		   m.ticks, (double)m.w_max_dps, (double)m.desv_max_mm);
@@ -220,7 +249,7 @@ static void test_detener(void)
 	const int tick_stop = 100;	/* en pleno crucero */
 
 	postura(300.0f, -100.0f, CIN_RAMA_POS, &th1, &th2);
-	assert(Planificador_Preparar(&p, th1, th2, 300.0f, 100.0f, v, a) == PLAN_OK);
+	assert(preparar(&p, th1, th2, 300.0f, 100.0f, v, a) == PLAN_OK);
 
 	/* Mismo movimiento hasta el tick de parada, para saber donde estaba al pedir STOP. */
 	plan_t ref = p;
@@ -259,38 +288,43 @@ static void test_rechazos(void)
 	plan_t p = { 0 };
 	const plan_t intacto = p;
 	float th1, th2;
+	float x, y;
 	ik_sol_t fin;
 	const float v = SPEED_DEFAULT_MM_S;
 	const float a = ACCEL_DEFAULT_MM_S2;
 
 	postura(300.0f, 0.0f, CIN_RAMA_POS, &th1, &th2);
 
-	/* Destino fuera del espacio de trabajo: lejos, pegado a la base, o mas alla de R_MAX_OP. */
-	assert(Planificador_Preparar(&p, th1, th2, 500.0f, 0.0f, v, a) == PLAN_ERR_RADIO);
-	assert(Planificador_Preparar(&p, th1, th2, 50.0f, 50.0f, v, a) == PLAN_ERR_RADIO);
-	assert(Planificador_Preparar(&p, th1, th2, 398.0f, 0.0f, v, a) == PLAN_ERR_RADIO);
+	/* Destino fuera del espacio de trabajo: lejos, muy cerca de la base, o mas alla de R_MAX_OP. */
+	assert(preparar(&p, th1, th2, 500.0f, 0.0f, v, a) == PLAN_ERR_RADIO);
+	assert(preparar(&p, th1, th2, 200.0f, 150.0f, v, a) == PLAN_ERR_RADIO);
+	assert(preparar(&p, th1, th2, 398.0f, 0.0f, v, a) == PLAN_ERR_RADIO);
 
 	/* Parametros invalidos. */
-	assert(Planificador_Preparar(&p, th1, th2, 350.0f, 0.0f, 0.0f, a) == PLAN_ERR_PARAM);
-	assert(Planificador_Preparar(&p, th1, th2, 350.0f, 0.0f, v, -1.0f) == PLAN_ERR_PARAM);
-	assert(Planificador_Preparar(NULL, th1, th2, 350.0f, 0.0f, v, a) == PLAN_ERR_PARAM);
+	assert(preparar(&p, th1, th2, 350.0f, 0.0f, 0.0f, a) == PLAN_ERR_PARAM);
+	assert(preparar(&p, th1, th2, 350.0f, 0.0f, v, -1.0f) == PLAN_ERR_PARAM);
+	assert(Planificador_Preparar(NULL, th1, th2, 0.0f, 350.0f, v, a) == PLAN_ERR_PARAM);
 	assert(Planificador_Preparar(&p, th1, th2, NAN, 0.0f, v, a) == PLAN_ERR_PARAM);
 
-	/* Ambos extremos validos, pero la recta pasa a 35 mm de la base (por dentro de
-	 * R_MIN_OP): de r = 200 a -20 grados a r = 200 a 140 grados. */
-	const float ax = 187.94f, ay = -68.40f;
-	const float bx = -153.21f, by = 128.56f;
-	postura(ax, ay, CIN_RAMA_POS, &th1, &th2);
-	assert(Cinematica_PuntoAlcanzable(bx, by));
-	assert(Planificador_Preparar(&p, th1, th2, bx, by, v, a) == PLAN_ERR_RADIO);
+	/* Ambos extremos validos EN LA MISMA RAMA, pero la recta pasa a 210 mm de la base. */
+	postura(200.0f, 220.0f, CIN_RAMA_POS, &th1, &th2);
+	frente(220.0f, -200.0f, &x, &y);
+	assert(Cinematica_InversaRama(x, y, CIN_RAMA_POS, &fin) == CIN_OK);
+	assert(preparar(&p, th1, th2, 220.0f, -200.0f, v, a) == PLAN_ERR_RADIO);
 
-	/* El ejemplo del SPEC 7.1: de (0, 300) a (0, -300) cruza la base. */
+	/* El ejemplo del SPEC 7.1: de un lado al otro pasando por la base. */
 	postura(0.0f, 300.0f, CIN_RAMA_POS, &th1, &th2);
-	assert(Planificador_Preparar(&p, th1, th2, 0.0f, -300.0f, v, a) == PLAN_ERR_RADIO);
+	frente(0.0f, -300.0f, &x, &y);
+	assert(Cinematica_PuntoAlcanzable(x, y));
+	assert(preparar(&p, th1, th2, 0.0f, -300.0f, v, a) == PLAN_ERR_RADIO);
 
-	/* Tramo y destino dentro del anillo, pero el hombro tendria que pasar de +90. */
-	assert(Cinematica_InversaRama(-300.0f, 100.0f, CIN_RAMA_POS, &fin) == CIN_ERR_LIMITE);
-	assert(Planificador_Preparar(&p, th1, th2, -300.0f, 100.0f, v, a) == PLAN_ERR_LIMITE);
+	/* Tramo dentro del anillo, pero el destino solo existe en la otra rama de codo:
+	 * se rechaza; no se cambia de rama a mitad de camino. */
+	postura(200.0f, 250.0f, CIN_RAMA_NEG, &th1, &th2);
+	frente(150.0f, 290.0f, &x, &y);
+	assert(Cinematica_InversaRama(x, y, CIN_RAMA_POS, &fin) == CIN_OK);
+	assert(Cinematica_InversaRama(x, y, CIN_RAMA_NEG, &fin) == CIN_ERR_LIMITE);
+	assert(preparar(&p, th1, th2, 150.0f, 290.0f, v, a) == PLAN_ERR_LIMITE);
 
 	/* Ningun rechazo toco el estado. */
 	assert(p.activo == intacto.activo && p.d_mm == intacto.d_mm && p.rama == intacto.rama);
@@ -298,39 +332,27 @@ static void test_rechazos(void)
 	printf("OK  rechazos del pre-vuelo\n");
 }
 
-/** La rama de codo se elige una vez y no cambia; con esta mecanica siempre es la +. */
+/** La rama de codo es la de la postura de partida y no cambia. */
 static void test_rama(void)
 {
 	plan_t p;
 	float th1, th2;
 
-	postura(300.0f, 100.0f, CIN_RAMA_POS, &th1, &th2);
-	assert(th2 > 0.0f);
-	assert(Planificador_Preparar(&p, th1, th2, 300.0f, -100.0f,
-								 SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
-	assert(p.rama == CIN_RAMA_POS);
+	postura(300.0f, 100.0f, CIN_RAMA_NEG, &th1, &th2);
+	assert(th2 < 0.0f);
+	assert(preparar(&p, th1, th2, 300.0f, -100.0f, SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
+	assert(p.rama == CIN_RAMA_NEG);
 
 	medicion_t m = correr(&p, -1);
 	assert(m.resultado == PLAN_PASO_FIN);
 	assert(m.rama_constante);
-	assert(p.th2_deg > 0.0f);
+	assert(p.th2_deg < 0.0f);
 	assert(m.desv_max_mm < TOL_RECTA_MM);
 
-	/* Desde HOME (theta2 = 0) las dos ramas coinciden con la postura: tiene que quedar
-	 * la unica que sirve para todo el tramo. */
-	assert(Planificador_Preparar(&p, 0.0f, 0.0f, 300.0f, 100.0f,
-								 SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
+	postura(300.0f, 100.0f, CIN_RAMA_POS, &th1, &th2);
+	assert(preparar(&p, th1, th2, 300.0f, -100.0f, SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
 	assert(p.rama == CIN_RAMA_POS);
-
-	/* MOVE X200 Y150 del enunciado: alcanzable con el codo rearmado. */
-	postura(300.0f, 0.0f, CIN_RAMA_POS, &th1, &th2);
-	assert(Planificador_Preparar(&p, th1, th2, 200.0f, 150.0f,
-								 SPEED_DEFAULT_MM_S, ACCEL_DEFAULT_MM_S2) == PLAN_OK);
-	m = correr(&p, -1);
-	assert(m.resultado == PLAN_PASO_FIN);
-	assert(hypotf(m.x_fin - 200.0f, m.y_fin - 150.0f) < TOL_DESTINO_MM);
-	assert(m.desv_max_mm < TOL_RECTA_MM && m.w_max_dps <= JOINT_VMAX_DPS * 1.0001f);
-	printf("OK  rama de codo fija y MOVE X200 Y150 del enunciado\n");
+	printf("OK  rama de codo fija durante el movimiento\n");
 }
 
 int main(void)

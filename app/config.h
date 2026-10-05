@@ -29,28 +29,28 @@
 #define PULSE_MIN_US				500		/**< [CONFIRMAR] calibrar por servo */
 #define PULSE_MAX_US				2500	/**< [CONFIRMAR] calibrar por servo */
 
-/* [CONFIRMAR al mover el servo en E3] dato teorico del equipo (2026-10-03): a 90 de servo
- * el brazo apunta al frente (+X) y al AUMENTAR el angulo de servo gira en sentido horario. */
-#define SHOULDER_ZERO_SERVO_DEG		90.0f	/**< Angulo de servo con el brazo sobre +X (theta1 = 0) */
-#define SHOULDER_SIGN				(-1.0f)	/**< +1 o -1: sentido del servo respecto del antihorario */
+/* Montaje actual (dato del equipo, 2026-10-04): con LOS DOS servos en 90 el brazo queda
+ * extendido y la pinza en X = 0, Y = 400. O sea: hombro a 90 de servo => theta1 = 90 (apunta
+ * a +Y); codo a 90 de servo => theta2 = 0 (brazo recto).
+ *
+ * [CONFIRMAR con el brazo, prueba de sentidos del README] Los SIGNOS son un supuesto: +1 = al
+ * subir el angulo de servo la junta gira en sentido antihorario visto desde arriba. Si un
+ * servo gira al reves, cambiar su SIGN a (-1.0f) y su ZERO segun indica el README. */
+#define SHOULDER_ZERO_SERVO_DEG		0.0f	/**< Angulo de servo con el brazo sobre +X (theta1 = 0) */
+#define SHOULDER_SIGN				1.0f	/**< [CONFIRMAR] +1 o -1: sentido del servo respecto del antihorario */
 #define SHOULDER_SERVO_MIN_DEG		0.0f	/**< [CONFIRMAR] tope mecanico inferior, en angulo de servo */
 #define SHOULDER_SERVO_MAX_DEG		180.0f	/**< [CONFIRMAR] tope mecanico superior, en angulo de servo */
 
-/* Codo (plan del equipo, 2026-10-03): el servo se monta de modo que su 0 quede en el tope
- * fisico de plegado (la pinza choca con la base a ~9 cm del eje del hombro) y asi aprovechar
- * todo el recorrido. Al subir el angulo de servo el brazo se extiende; el antebrazo se pliega
- * en sentido ANTIHORARIO => theta2 = ZERO - servo. El angulo de servo con el brazo recto
- * (ELBOW_ZERO_SERVO_DEG) todavia NO se conoce: se mide en E3 moviendo el servo despacio y
- * leyendo el encoder ya calibrado (por geometria deberia rondar los 150).
- *
- * [CONFIRMAR en E3] Los tres valores de abajo son PROVISORIOS y equivalen al mismo rango fisico
- * (theta2 de 0 a 152): hoy solo los usan la cinematica y los tests, ningun servo se mueve con
- * ellos. Al medir, dejar ELBOW_SERVO_MIN_DEG unos grados ANTES del choque: un servo empujando
- * contra un tope se quema. */
-#define ELBOW_ZERO_SERVO_DEG		180.0f	/**< Angulo de servo con el brazo recto (theta2 = 0) */
-#define ELBOW_SIGN					(-1.0f)
-#define ELBOW_SERVO_MIN_DEG			28.0f	/**< [CONFIRMAR] tope antes del choque de la pinza con la base */
-#define ELBOW_SERVO_MAX_DEG			180.0f	/**< Brazo recto */
+#define ELBOW_ZERO_SERVO_DEG		90.0f	/**< Angulo de servo con el brazo recto (theta2 = 0) */
+#define ELBOW_SIGN					1.0f	/**< [CONFIRMAR] */
+#define ELBOW_SERVO_MIN_DEG			0.0f	/**< [CONFIRMAR] tope mecanico, en angulo de servo */
+#define ELBOW_SERVO_MAX_DEG			180.0f	/**< [CONFIRMAR] tope mecanico, en angulo de servo */
+
+/* Postura de HOME y de arranque. SIN ENCODERS el firmware no sabe donde esta el brazo: supone
+ * que esta en HOME. El primer HOME habilita el PWM directamente en esta postura; si el brazo
+ * estaba en otro lado, el servo va de golpe hasta aca (ver README). */
+#define HOME_TH1_DEG				90.0f	/**< Hombro a 90 de servo */
+#define HOME_TH2_DEG				0.0f	/**< Codo a 90 de servo (brazo recto) */
 
 /* Limites articulares: se DERIVAN de los limites de servo; no editar a mano. */
 #define CFG_MIN(a, b)				(((a) < (b)) ? (a) : (b))
@@ -74,8 +74,9 @@
 /* Espacio de trabajo operativo                                              */
 /* ------------------------------------------------------------------------- */
 
-/* 10 cm: la pinza choca a ~9 cm de la base (el enunciado pide 5 cm; la mecanica no llega). */
-#define R_MIN_OP_MM					100.0f	/**< Radio minimo operativo */
+/* Con el codo recto en 90 de servo y 180 de recorrido, theta2 llega a +-90: el radio minimo
+ * geometrico es 282,8 mm. Se deja un margen. Ajustar si cambia el montaje del codo. */
+#define R_MIN_OP_MM					285.0f	/**< Radio minimo operativo */
 #define R_MAX_OP_MM					395.0f	/**< Margen contra la singularidad de brazo estirado */
 
 /** |cos(theta2)| puede pasarse de 1 por redondeo; mas alla de esto es inalcanzable. */
@@ -101,6 +102,8 @@
 /** Tope de velocidad por junta. Red de seguridad contra rotura de servos: nada
  *  (MOVE, JOINT, PULSE, HOME, arranque) mueve una junta mas rapido que esto. */
 #define JOINT_VMAX_DPS				60.0f
+/** Velocidad de los movimientos articulares (JOINT, HOME, PULSE). Debe ser <= JOINT_VMAX_DPS. */
+#define JOINT_MOVE_DPS				30.0f
 
 #define PREFLIGHT_STEP_MM			2.0f	/**< Paso de muestreo del segmento en el pre-vuelo */
 #define MOVE_DIST_MIN_MM			0.1f	/**< Por debajo de esto el MOVE responde OK sin moverse */

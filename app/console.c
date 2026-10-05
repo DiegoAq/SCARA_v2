@@ -4,10 +4,12 @@
  */
 #include "console.h"
 
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
+#include "cinematica.h"
 #include "config.h"
 #include "i2c.h"
 #include "microrl.h"
@@ -17,6 +19,9 @@
 #include "uart.h"
 
 #define LARGO_RESPUESTA		160
+
+/** Por debajo de esto una coordenada se muestra como 0 (es menos que lo que se imprime). */
+#define CASI_CERO_MM		0.005f
 
 /** Periodo entre lineas del modo en vivo de RAW (diagnostico, no es un parametro fisico). */
 #define RAW_LIVE_PERIODO_MS	150U
@@ -28,6 +33,7 @@
 static microrl_t rl;
 static bool reloj_con_hse;
 static uint8_t ultimo_rx;
+static bool traza_activa;
 
 static const char texto_ayuda[] =
 	"Comandos (no distingue mayusculas):" ENDL
@@ -35,16 +41,16 @@ static const char texto_ayuda[] =
 	"  STATUS               estado y parametros activos" ENDL
 	"  SPEED v              velocidad de MOVE (mm/s)" ENDL
 	"  ACCEL a              aceleracion de MOVE (mm/s2)" ENDL
-	"  MOVE X Y [Z]         recta al punto (mm)               [E5]" ENDL
-	"  JOINT q1 q2          juntas a angulos theta (grados)   [E3]" ENDL
-	"  HOME | STOP          ir a HOME | frenar con rampa      [E5]" ENDL
-	"  PULSE n us           pulso crudo a un servo            [E3]" ENDL
+	"  HOME                 1ra vez: HABILITA los servos en HOME (salto). Despues: vuelve a HOME" ENDL
+	"  MOVE X Y             recta al punto (mm)" ENDL
+	"  JOINT q1 q2          juntas a angulos theta (grados)" ENDL
+	"  PULSE n us           pulso crudo al servo n (1 hombro, 2 codo), sin limites articulares" ENDL
+	"  STOP                 detiene el movimiento (MOVE frena con rampa)" ENDL
+	"  TRACE ON|OFF         linea CSV por tick: T,t_ms,x,y,q1,q2" ENDL
 	"  ANGLE                angulo de cada encoder y de cada junta (grados)" ENDL
 	"  RAW [LIVE]            cuentas y estado del iman; LIVE repite en vivo" ENDL
 	"  I2CSCAN              direcciones que contestan en cada bus I2C" ENDL
-	"  CALIB                calibracion guiada                [E4]" ENDL
-	"  TRACE ON|OFF         CSV por tick                      [E5]" ENDL
-	"  GRIPPER | ORIENT | ZTEST | SETZ0                       [E7]" ENDL;
+	"  CALIB | GRIPPER | ORIENT | ZTEST | SETZ0    todavia no disponibles" ENDL;
 
 static void imprimir(const char *texto)
 {
@@ -86,6 +92,22 @@ static const char *nombre_iman(as5600_iman_t iman)
 	}
 }
 
+/**
+ * Postura comandada y su posicion cartesiana. Los valores casi nulos se pasan a 0 exacto:
+ * la FK de un brazo sobre un eje da cosas como -0,00002 y se imprimiria "-0.0".
+ */
+static void postura_actual(float *q1, float *q2, float *x, float *y)
+{
+	Motion_PosturaComandada(q1, q2);
+	(void)Cinematica_Directa(*q1, *q2, x, y);
+	if (fabsf(*x) < CASI_CERO_MM) {
+		*x = 0.0f;
+	}
+	if (fabsf(*y) < CASI_CERO_MM) {
+		*y = 0.0f;
+	}
+}
+
 static void comando_status(void)
 {
 	char linea[LARGO_RESPUESTA];
@@ -100,11 +122,83 @@ static void comando_status(void)
 				   (unsigned long)UART_BytesPerdidosRx(), (unsigned long)UART_BytesPerdidosTx(),
 				   reloj_con_hse ? "HSE" : "HSI");
 	imprimir(linea);
+
+	float q1, q2, x, y;
+	postura_actual(&q1, &q2, &x, &y);
+	(void)snprintf(linea, sizeof(linea), " servos=%s q1=%.1f q2=%.1f x=%.1f y=%.1f",
+				   Motion_ServosActivos() ? "ON" : "OFF",
+				   (double)q1, (double)q2, (double)x, (double)y);
+	imprimir(linea);
+
 	imprimir(" enc1=");
 	imprimir(nombre_iman(Motion_EstadoIman(JUNTA_HOMBRO)));
 	imprimir(" enc2=");
 	imprimir(nombre_iman(Motion_EstadoIman(JUNTA_CODO)));
 	imprimir(ENDL);
+}
+
+/** Arma "x=.. y=.. q1=.. q2=.." con la postura comandada. */
+static void texto_postura(char *linea, size_t largo)
+{
+	float q1, q2, x, y;
+
+	postura_actual(&q1, &q2, &x, &y);
+	(void)snprintf(linea, largo, "x=%.1f y=%.1f q1=%.1f q2=%.1f",
+				   (double)x, (double)y, (double)q1, (double)q2);
+}
+
+/** Traduce el resultado de un comando de movimiento a la respuesta de la consola. */
+static void responder_movimiento(motion_res_t r)
+{
+	char linea[LARGO_RESPUESTA];
+
+	switch (r) {
+	case MOTION_OK:
+		responder_ok(NULL);
+		break;
+	case MOTION_YA_EN_DESTINO:
+		responder_ok("ya esta en el destino");
+		break;
+	case MOTION_SERVOS_HABILITADOS:
+		texto_postura(linea, sizeof(linea));
+		imprimir("OK servos habilitados en HOME ");
+		imprimir(linea);
+		imprimir(ENDL);
+		break;
+	case MOTION_ERR_RADIO:
+		responder_error(ERR_RADIO, "fuera del espacio de trabajo");
+		break;
+	case MOTION_ERR_LIMITE:
+		responder_error(ERR_LIMITE, "limite articular");
+		break;
+	case MOTION_ERR_OCUPADO:
+		responder_error(ERR_OCUPADO, "movimiento en curso (STOP para detenerlo)");
+		break;
+	case MOTION_ERR_APAGADO:
+		responder_error(ERR_OCUPADO, "servos sin habilitar: ejecutar HOME primero");
+		break;
+	default:
+		responder_error(ERR_RANGO, "parametro fuera de rango");
+		break;
+	}
+}
+
+static void comando_move(const comando_t *cmd)
+{
+	if (cmd->tiene_z) {
+		responder_error(ERR_SINTAXIS, "el eje Z todavia no esta disponible: usar MOVE X Y");
+		return;
+	}
+	responder_movimiento(Motion_MoverLineal(cmd->x_mm, cmd->y_mm));
+}
+
+static void comando_pulse(const comando_t *cmd)
+{
+	if (cmd->servo < 1 || cmd->servo > JUNTA_CANT || cmd->pulso_us < 0) {
+		responder_error(ERR_RANGO, "uso: PULSE n us, con n = 1 (hombro) o 2 (codo)");
+		return;
+	}
+	responder_movimiento(Motion_MoverPulso((junta_id_t)(cmd->servo - 1), (uint32_t)cmd->pulso_us));
 }
 
 /** ANGLE: angulo de cada encoder y de cada junta. Exige iman OK en los dos. */
@@ -176,6 +270,11 @@ static void comando_raw(bool en_vivo)
 		} else {
 			responder_error(ERR_ENCODER, linea);
 		}
+		return;
+	}
+	if (Motion_Estado() == MOTION_MOVING || Motion_Estado() == MOTION_STOPPING) {
+		/* El modo en vivo frena el loop: el brazo quedaria congelado a mitad de camino. */
+		responder_error(ERR_OCUPADO, "movimiento en curso: RAW LIVE solo con el brazo quieto");
 		return;
 	}
 
@@ -308,6 +407,26 @@ static int ejecutar(int argc, const char *const *argv)
 	case CMD_I2CSCAN:
 		comando_i2cscan();
 		break;
+	case CMD_HOME:
+		responder_movimiento(Motion_Home());
+		break;
+	case CMD_JOINT:
+		responder_movimiento(Motion_MoverJuntas(cmd.q1_deg, cmd.q2_deg));
+		break;
+	case CMD_MOVE:
+		comando_move(&cmd);
+		break;
+	case CMD_PULSE:
+		comando_pulse(&cmd);
+		break;
+	case CMD_STOP:
+		Motion_Detener();
+		responder_ok(NULL);
+		break;
+	case CMD_TRACE:
+		traza_activa = cmd.activar;
+		responder_ok(traza_activa ? "trace=ON" : "trace=OFF");
+		break;
 	default:
 		responder_error(ERR_SINTAXIS, "comando no disponible todavia en esta etapa");
 		break;
@@ -319,6 +438,7 @@ void Consola_Init(bool reloj_hse)
 {
 	reloj_con_hse = reloj_hse;
 	ultimo_rx = 0U;
+	traza_activa = false;
 
 	microrl_init(&rl, imprimir);
 	microrl_set_execute_callback(&rl, ejecutar);
@@ -348,6 +468,34 @@ void Consola_Procesar(void)
 		}
 		ultimo_rx = byte;
 	}
+}
+
+void Consola_DespuesDelTick(void)
+{
+	char postura[LARGO_RESPUESTA / 2];
+	char linea[LARGO_RESPUESTA];
+	motion_evento_t evento = Motion_TomarEvento();
+	bool en_movimiento = (Motion_Estado() == MOTION_MOVING || Motion_Estado() == MOTION_STOPPING);
+
+	/* La traza incluye el tick en que termina el movimiento (trae el punto final). */
+	if (traza_activa && (en_movimiento || evento != MOTION_EVENTO_NINGUNO)) {
+		float q1, q2, x, y;
+
+		postura_actual(&q1, &q2, &x, &y);
+		(void)snprintf(linea, sizeof(linea), "T,%lu,%.2f,%.2f,%.2f,%.2f",
+					   (unsigned long)Millis(), (double)x, (double)y, (double)q1, (double)q2);
+		Consola_ImprimirLog(linea);
+	}
+
+	if (evento == MOTION_EVENTO_NINGUNO) {
+		return;
+	}
+	texto_postura(postura, sizeof(postura));
+	(void)snprintf(linea, sizeof(linea), "%s %s",
+				   (evento == MOTION_EVENTO_FIN) ? "DONE"
+				   : (evento == MOTION_EVENTO_DETENIDO) ? "STOPPED" : "FAULT movimiento abortado en",
+				   postura);
+	Consola_ImprimirLog(linea);
 }
 
 void Consola_ImprimirLog(const char *mensaje)

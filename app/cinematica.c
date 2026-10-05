@@ -90,8 +90,13 @@ cin_res_t Cinematica_InversaRama(float x_mm, float y_mm, int rama, ik_sol_t *sol
 	float th2 = atan2f(s2, c2);
 	float th1 = atan2f(y_mm, x_mm) - atan2f(L2_MM * s2, L1_MM + L2_MM * c2);
 
-	float th1_deg = Cinematica_NormalizarDeg(th1 * RAD_A_DEG);
-	float th2_deg = th2 * RAD_A_DEG;
+	/* Cada angulo se lleva a la vuelta centrada en el rango de su junta. Normalizar a
+	 * (-180, 180] a secas falla si el rango llega justo a 180 (hombro en [0, 180]): por
+	 * redondeo, un 180 sale como -179,999 y queda fuera de limites. */
+	const float centro1 = 0.5f * (JOINT1_MIN_DEG + JOINT1_MAX_DEG);
+	const float centro2 = 0.5f * (JOINT2_MIN_DEG + JOINT2_MAX_DEG);
+	float th1_deg = centro1 + Cinematica_NormalizarDeg(th1 * RAD_A_DEG - centro1);
+	float th2_deg = centro2 + Cinematica_NormalizarDeg(th2 * RAD_A_DEG - centro2);
 
 	sol->rama = (rama >= 0) ? CIN_RAMA_POS : CIN_RAMA_NEG;
 

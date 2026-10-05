@@ -36,6 +36,14 @@ void Consola_Init(bool reloj_hse);
 void Consola_Procesar(void);
 
 /**
+ * @brief Informa lo que dejo el ultimo tick de movimiento: la linea de TRACE y los avisos
+ *        asincronos (`DONE`, `STOPPED`, `FAULT`).
+ *
+ * Llamar despues de cada Motion_Tick().
+ */
+void Consola_DespuesDelTick(void);
+
+/**
  * @brief Imprime un mensaje asincrono (DONE, WARN...) sin romper la linea que se esta tipeando.
  *
  * Borra la linea actual, imprime el mensaje y vuelve a dibujar el prompt con lo tipeado
