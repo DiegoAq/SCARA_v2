@@ -2,7 +2,8 @@
  * @file main.c
  * @brief Firmware del robot SCARA: super-loop sin RTOS.
  *
- * Etapa E2: reloj, SysTick, LED de estado, consola por USART1 y tick de control de 20 ms.
+ * Reloj, SysTick, LED de estado, consola por USART1 y un tick de control de 20 ms que avanza
+ * el brazo, el eje Z, la garra y la rutina en curso, en ese orden.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -10,10 +11,14 @@
 #include "clock.h"
 #include "config.h"
 #include "console.h"
+#include "eje_z.h"
 #include "gpio.h"
+#include "gripper.h"
 #include "motion.h"
+#include "secuencia.h"
 #include "systick.h"
 #include "uart.h"
+#include "vl53l0x.h"
 
 int main(void)
 {
@@ -23,6 +28,11 @@ int main(void)
 	GPIO_LedInit();
 	UART_Init();
 	Motion_Init();
+	Gripper_Init();
+	EjeZ_Init();
+	/* Despues de Motion_Init, que inicializa I2C1. Si un sensor no esta, se informa en STATUS. */
+	(void)VL53L0X_Init();
+	Secuencia_Init();
 	Consola_Init(reloj_ok);
 
 	/* Si el cristal no arranco el LED parpadea rapido, ademas del WARN por consola. */
@@ -44,6 +54,9 @@ int main(void)
 				t_tick = Millis();
 			}
 			Motion_Tick();
+			EjeZ_Tick();
+			Gripper_Tick();
+			Secuencia_Tick();
 			Consola_DespuesDelTick();
 		}
 

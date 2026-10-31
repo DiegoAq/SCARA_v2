@@ -38,6 +38,92 @@ float Cinematica_NormalizarDeg(float ang_deg)
 	return ang_deg;
 }
 
+float Cinematica_VueltaCentrada(float ang_deg, float centro_deg)
+{
+	return centro_deg + Cinematica_NormalizarDeg(ang_deg - centro_deg);
+}
+
+float Cinematica_ErrorPorJuntas(float th1_deg, float th2_deg, float d1_deg, float d2_deg)
+{
+	float th1 = th1_deg * DEG_A_RAD;
+	float th12 = (th1_deg + th2_deg) * DEG_A_RAD;
+	float d1 = fabsf(d1_deg) * DEG_A_RAD;
+	float d2 = fabsf(d2_deg) * DEG_A_RAD;
+
+	/* Jacobiano del SCARA, con cada termino en valor absoluto: peor caso de signos. */
+	float ex = fabsf(L1_MM * sinf(th1) + L2_MM * sinf(th12)) * d1 + fabsf(L2_MM * sinf(th12)) * d2;
+	float ey = fabsf(L1_MM * cosf(th1) + L2_MM * cosf(th12)) * d1 + fabsf(L2_MM * cosf(th12)) * d2;
+
+	return sqrtf(ex * ex + ey * ey);
+}
+
+void Cinematica_PuntoCircunferencia(float cx_mm, float cy_mm, float r_mm, float ang_deg,
+									float *x_mm, float *y_mm)
+{
+	if (x_mm != NULL && y_mm != NULL) {
+		*x_mm = cx_mm + r_mm * cosf(ang_deg * DEG_A_RAD);
+		*y_mm = cy_mm + r_mm * sinf(ang_deg * DEG_A_RAD);
+	}
+}
+
+float Cinematica_Atan2Deg(float y, float x)
+{
+	return atan2f(y, x) * RAD_A_DEG;
+}
+
+void Cinematica_Direccion(float ang_deg, float *ux, float *uy)
+{
+	Cinematica_PuntoCircunferencia(0.0f, 0.0f, 1.0f, ang_deg, ux, uy);
+}
+
+float Cinematica_YawGarra(float th1_deg, float th2_deg, float rot_deg)
+{
+	return Cinematica_NormalizarDeg(th1_deg + th2_deg + rot_deg + GARRA_YAW_CERO_DEG);
+}
+
+void Cinematica_PuntoSensor(float th1_deg, float th2_deg, float rot_deg, float lado,
+							float *x_mm, float *y_mm)
+{
+	float x, y, ux, uy;
+
+	if (x_mm == NULL || y_mm == NULL) {
+		return;
+	}
+	(void)Cinematica_Directa(th1_deg, th2_deg, &x, &y);
+	Cinematica_Direccion(Cinematica_YawGarra(th1_deg, th2_deg, rot_deg), &ux, &uy);
+
+	float a_lo_largo = lado * 0.5f * SENSOR_SEPARACION_MM;
+
+	*x_mm = x + a_lo_largo * ux - SENSOR_DESVIO_MM * uy;
+	*y_mm = y + a_lo_largo * uy + SENSOR_DESVIO_MM * ux;
+}
+
+bool Cinematica_RotParaYaw(float th1_deg, float th2_deg, float yaw_deg, float rot_actual_deg,
+						   float *rot_deg)
+{
+	float base = Cinematica_NormalizarDeg(yaw_deg - th1_deg - th2_deg - GARRA_YAW_CERO_DEG);
+	const float candidatos[3] = { base, base - 180.0f, base + 180.0f };
+	bool hay = false;
+	float mejor = 0.0f;
+
+	if (rot_deg == NULL) {
+		return false;
+	}
+	for (int i = 0; i < 3; i++) {
+		float c = candidatos[i];
+
+		if (c >= ROT_MIN_DEG && c <= ROT_MAX_DEG
+				&& (!hay || fabsf(c - rot_actual_deg) < fabsf(mejor - rot_actual_deg))) {
+			mejor = c;
+			hay = true;
+		}
+	}
+	if (hay) {
+		*rot_deg = mejor;
+	}
+	return hay;
+}
+
 float Cinematica_JuntaDesdeEncoder(float enc_deg, float cero_deg, float signo)
 {
 	/* Se normaliza otra vez despues del signo: con signo -1, un +180 pasaria a -180,

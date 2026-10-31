@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "cinematica.h"
 #include "config.h"
@@ -34,6 +35,8 @@ typedef struct {
 	float v_pico_mm_s;		/**< Velocidad de avance maxima */
 	float acel_max_mm_s2;	/**< Mayor aumento de velocidad entre ticks */
 	float frenado_max_mm_s2;/**< Mayor caida de velocidad entre ticks */
+	float acel_art_max_dps2;/**< Mayor aumento de velocidad de una junta entre ticks, por
+							 *   encima del piso de arranque JOINT_W_ARRANQUE_DPS */
 	float x_fin, y_fin;		/**< FK de la ultima postura comandada */
 	bool  rama_constante;	/**< theta2 nunca cambio de signo */
 	bool  s_monotono;		/**< la distancia recorrida nunca retrocedio */
@@ -90,6 +93,8 @@ static medicion_t correr(plan_t *p, int tick_stop)
 	float th2 = p->th2_deg;
 	float v_prev = 0.0f;
 	float s_prev = 0.0f;
+	float w1_prev = 0.0f;
+	float w2_prev = 0.0f;
 
 	while (m.resultado == PLAN_PASO_EN_CURSO) {
 		float th1_prev = th1;
@@ -109,6 +114,16 @@ static medicion_t correr(plan_t *p, int tick_stop)
 		float w2 = fabsf(th2 - th2_prev) / DT_S;
 		if (w1 > m.w_max_dps) m.w_max_dps = w1;
 		if (w2 > m.w_max_dps) m.w_max_dps = w2;
+
+		/* Aceleracion articular: solo cuenta cuando la junta ya va mas rapido que el piso. */
+		if (w1 > JOINT_W_ARRANQUE_DPS && (w1 - w1_prev) / DT_S > m.acel_art_max_dps2) {
+			m.acel_art_max_dps2 = (w1 - w1_prev) / DT_S;
+		}
+		if (w2 > JOINT_W_ARRANQUE_DPS && (w2 - w2_prev) / DT_S > m.acel_art_max_dps2) {
+			m.acel_art_max_dps2 = (w2 - w2_prev) / DT_S;
+		}
+		w1_prev = w1;
+		w2_prev = w2;
 
 		/* Distancia del punto comandado a la recta: producto cruz con el versor. */
 		assert(Cinematica_Directa(th1, th2, &m.x_fin, &m.y_fin));
@@ -205,6 +220,9 @@ static void test_limite_articular(void)
 	assert(m.resultado == PLAN_PASO_FIN);
 	assert(m.w_max_dps <= JOINT_VMAX_DPS * 1.0001f);
 	assert(m.w_max_dps > JOINT_VMAX_DPS * 0.9f);	/* el limite realmente actuo */
+	/* ...y las juntas llegaron a ese tope con rampa, no de golpe. */
+	assert(m.acel_art_max_dps2 <= JOINT_ACCEL_DPS2 * (1.0f + TOL_REL));
+	assert(m.acel_art_max_dps2 > JOINT_ACCEL_DPS2 * 0.5f);
 	assert(m.v_pico_mm_s < V_RAPIDA_MM_S);			/* ...y freno el avance */
 	assert(m.desv_max_mm < TOL_RECTA_MM);
 	assert(m.s_monotono && m.rama_constante);
@@ -230,6 +248,9 @@ static void test_desde_home(void)
 	assert(m.desv_max_mm < TOL_RECTA_MM);
 	assert(m.s_monotono && m.rama_constante);
 	assert(distancia_a(m.x_fin, m.y_fin, 300.0f, 100.0f) < TOL_DESTINO_MM);
+
+	/* Salir de la singularidad era lo mas brusco: el codo pasaba de 0 al tope en un tick. */
+	assert(m.acel_art_max_dps2 <= JOINT_ACCEL_DPS2 * (1.0f + TOL_REL));
 
 	/* Desde afuera del anillo solo se puede entrar: alejarse mas se rechaza. */
 	assert(preparar(&p, HOME_TH1_DEG, HOME_TH2_DEG, 396.0f, 50.0f,
@@ -355,6 +376,62 @@ static void test_rama(void)
 	printf("OK  rama de codo fija durante el movimiento\n");
 }
 
+/** Perfil de una variable (el de JOINT/HOME/PULSE): rampas exactas y STOP. */
+static void test_perfil_1d(void)
+{
+	perfil_t pf;
+	const float v = 30.0f;
+	const float a = 90.0f;
+	float v_prev = 0.0f;
+	float s_prev = 0.0f;
+	float v_pico = 0.0f;
+	int ticks = 0;
+	bool llego = false;
+
+	Perfil_Iniciar(&pf, 30.0f, v, a);
+	while (!llego) {
+		llego = Perfil_Paso(&pf, DT_S);
+		float vel = (pf.s - s_prev) / DT_S;
+
+		assert(pf.s >= s_prev);
+		assert(fabsf(vel - v_prev) <= a * DT_S * (1.0f + TOL_REL));	/* nunca un salto de velocidad */
+		if (vel > v_pico) v_pico = vel;
+		v_prev = vel;
+		s_prev = pf.s;
+		assert(++ticks < TICKS_MAX);
+	}
+	assert(pf.s == 30.0f && !pf.detenido);
+	assert(fabsf(v_pico - v) < v * TOL_REL);
+	assert(v_prev <= a * DT_S * (1.0f + TOL_REL));	/* llega casi parado */
+	assert(abs(ticks - (int)((30.0f / v + v / a) / DT_S)) <= 2);
+
+	/* Tramo corto: no llega a crucero (triangular). */
+	Perfil_Iniciar(&pf, 2.0f, v, a);
+	v_pico = 0.0f;
+	s_prev = 0.0f;
+	while (!Perfil_Paso(&pf, DT_S)) {
+		if ((pf.s - s_prev) / DT_S > v_pico) v_pico = (pf.s - s_prev) / DT_S;
+		s_prev = pf.s;
+	}
+	assert(pf.s == 2.0f && v_pico < v);
+
+	/* STOP en crucero: frena en v^2/(2a) y queda antes del destino. */
+	Perfil_Iniciar(&pf, 30.0f, v, a);
+	for (int i = 0; i < 30; i++) {
+		assert(!Perfil_Paso(&pf, DT_S));
+	}
+	float s_stop = pf.s + pf.v * pf.v / (2.0f * a);
+	Perfil_Detener(&pf);
+	while (!Perfil_Paso(&pf, DT_S)) {
+	}
+	assert(pf.detenido && fabsf(pf.s - s_stop) < 1e-3f && pf.s < 30.0f);
+
+	/* Distancia nula: termina en el primer paso. */
+	Perfil_Iniciar(&pf, 0.0f, v, a);
+	assert(Perfil_Paso(&pf, DT_S));
+	printf("OK  perfil de una variable (JOINT/HOME/PULSE): rampas y STOP\n");
+}
+
 int main(void)
 {
 	printf("== test_planificador ==\n");
@@ -365,6 +442,7 @@ int main(void)
 	test_detener();
 	test_rechazos();
 	test_rama();
+	test_perfil_1d();
 	printf("test_planificador: TODO OK\n");
 	return 0;
 }

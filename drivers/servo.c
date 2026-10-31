@@ -12,18 +12,17 @@ typedef struct {
 	pwm_id_t pwm;
 	float zero_deg;		/**< Angulo de servo con theta = 0 */
 	float sign;			/**< +1 o -1 */
+	float range_deg;	/**< Recorrido real entre PULSE_MIN_US y PULSE_MAX_US */
 	float theta_min;	/**< Limite articular inferior (grados) */
 	float theta_max;	/**< Limite articular superior (grados) */
 } servo_cfg_t;
 
 static const servo_cfg_t servos[SERVO_CANT] = {
-	[SERVO_HOMBRO] = { PWM_SERVO_HOMBRO, SHOULDER_ZERO_SERVO_DEG, SHOULDER_SIGN,
+	[SERVO_HOMBRO] = { PWM_SERVO_HOMBRO, SHOULDER_ZERO_SERVO_DEG, SHOULDER_SIGN, SHOULDER_RANGE_DEG,
 					   JOINT1_MIN_DEG, JOINT1_MAX_DEG },
-	[SERVO_CODO]   = { PWM_SERVO_CODO, ELBOW_ZERO_SERVO_DEG, ELBOW_SIGN,
+	[SERVO_CODO]   = { PWM_SERVO_CODO, ELBOW_ZERO_SERVO_DEG, ELBOW_SIGN, ELBOW_RANGE_DEG,
 					   JOINT2_MIN_DEG, JOINT2_MAX_DEG },
 };
-
-#define US_POR_GRADO	((float)(PULSE_MAX_US - PULSE_MIN_US) / SERVO_RANGE_DEG)
 
 static float theta_cmd[SERVO_CANT];
 static uint32_t pulso_cmd[SERVO_CANT];
@@ -51,7 +50,7 @@ uint32_t Servo_PulsoDeJunta(servo_id_t id, float theta_deg)
 	}
 
 	float servo_deg = servos[id].zero_deg + servos[id].sign * theta_deg;
-	float us = (float)PULSE_MIN_US + servo_deg * US_POR_GRADO;
+	float us = (float)PULSE_MIN_US + servo_deg * Servo_UsPorGrado(id);
 
 	/* Saturar antes de convertir a entero: un float negativo a uint32_t no esta definido. */
 	if (us < (float)PULSE_MIN_US) {
@@ -69,10 +68,23 @@ float Servo_JuntaDePulso(servo_id_t id, uint32_t us)
 		return 0.0f;
 	}
 
-	float servo_deg = ((float)us - (float)PULSE_MIN_US) / US_POR_GRADO;
-
 	/* SIGN vale +1 o -1: dividir por el es lo mismo que multiplicar. */
-	return servos[id].sign * (servo_deg - servos[id].zero_deg);
+	return servos[id].sign * (Servo_AnguloDePulso(id, us) - servos[id].zero_deg);
+}
+
+float Servo_AnguloDePulso(servo_id_t id, uint32_t us)
+{
+	if (id >= SERVO_CANT) {
+		return 0.0f;
+	}
+	return ((float)us - (float)PULSE_MIN_US) / Servo_UsPorGrado(id);
+}
+
+float Servo_UsPorGrado(servo_id_t id)
+{
+	const float rango = (id < SERVO_CANT) ? servos[id].range_deg : SERVO_RANGE_DEG;
+
+	return (float)(PULSE_MAX_US - PULSE_MIN_US) / rango;
 }
 
 bool Servo_ConfigurarJunta(servo_id_t id, float theta_deg)

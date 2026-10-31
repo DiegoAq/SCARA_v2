@@ -16,8 +16,11 @@ typedef enum {
 	ERR_RADIO = 2,		/**< Fuera del espacio de trabajo */
 	ERR_LIMITE = 3,		/**< Limite articular */
 	ERR_OCUPADO = 4,	/**< Hay un movimiento en curso */
-	ERR_ENCODER = 5,	/**< Falla de encoder o iman */
-	ERR_RANGO = 6		/**< Parametro fuera de rango */
+	ERR_ENCODER = 5,	/**< Falla de encoder o iman, o brazo en FAULT */
+	ERR_RANGO = 6,		/**< Parametro fuera de rango */
+	ERR_EJE_Z = 7,		/**< Eje Z sin referencia: falta SETZ0 */
+	ERR_SENSOR = 8,		/**< Sensor de distancia sin respuesta */
+	ERR_SIN_CAJA = 9	/**< No hay una caja o un mapa: falta SCAN */
 } consola_err_t;
 
 /**
@@ -36,10 +39,10 @@ void Consola_Init(bool reloj_hse);
 void Consola_Procesar(void);
 
 /**
- * @brief Informa lo que dejo el ultimo tick de movimiento: la linea de TRACE y los avisos
- *        asincronos (`DONE`, `STOPPED`, `FAULT`).
+ * @brief Informa lo que dejo el ultimo tick: la linea de TRACE, el modo en vivo de RAW y los
+ *        avisos asincronos (`DONE`, `STOPPED`, `FAULT`, `SEQ`, `CAJA`, `R,`, `C,`, `M,`).
  *
- * Llamar despues de cada Motion_Tick().
+ * Llamar despues de los ticks de movimiento (ultimo en el tick de control).
  */
 void Consola_DespuesDelTick(void);
 

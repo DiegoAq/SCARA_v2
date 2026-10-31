@@ -40,11 +40,46 @@ typedef struct {
 	float v_max_mm_s;		/**< Velocidad de crucero */
 	float a_mm_s2;			/**< Aceleracion y frenado */
 	float th1_deg, th2_deg;	/**< Ultima postura comandada */
+	float w1_dps, w2_dps;	/**< Velocidad (modulo) de cada junta en el ultimo tick */
 	int   rama;				/**< Rama de codo, fija durante todo el movimiento */
 	int   ticks_atasco;		/**< Ticks seguidos sin avanzar */
 	bool  activo;			/**< true entre Preparar OK y el fin del movimiento */
 	bool  detenido;			/**< true si se pidio Detener */
 } plan_t;
+
+/**
+ * Perfil trapezoidal de una sola variable (acelera, crucero, frena), en las unidades que
+ * elija quien lo usa: motion lo usa en grados para JOINT/HOME y en us para PULSE.
+ */
+typedef struct {
+	float d_total;	/**< Distancia pedida */
+	float d_obj;	/**< Distancia a la que se detiene (d_total, o menos tras Perfil_Detener) */
+	float s;		/**< Distancia recorrida */
+	float v;		/**< Velocidad del ultimo tick */
+	float v_max;	/**< Velocidad de crucero */
+	float a;		/**< Aceleracion y frenado */
+	bool  detenido;	/**< true si se pidio Perfil_Detener */
+} perfil_t;
+
+/**
+ * @brief Prepara un perfil desde s = 0 y velocidad 0.
+ * @param distancia Recorrido total (>= 0).
+ * @param v_max Velocidad de crucero (> 0), en unidades de distancia por segundo.
+ * @param a Aceleracion y frenado (> 0).
+ */
+void Perfil_Iniciar(perfil_t *pf, float distancia, float v_max, float a);
+
+/**
+ * @brief Avanza un tick. La velocidad nunca cambia mas de a*dt entre ticks.
+ * @return true cuando llego al final (s == d_obj); false mientras siga en camino.
+ */
+bool Perfil_Paso(perfil_t *pf, float dt_s);
+
+/**
+ * @brief Pide frenar con la aceleracion del perfil: acorta el recorrido a s + v^2/(2a).
+ *        Hay que seguir llamando a Perfil_Paso() hasta que devuelva true.
+ */
+void Perfil_Detener(perfil_t *pf);
 
 /**
  * @brief Pre-vuelo: valida el segmento completo y deja el movimiento listo.
@@ -68,10 +103,11 @@ plan_res_t Planificador_Preparar(plan_t *p, float th1_act_deg, float th2_act_deg
 								 float xf_mm, float yf_mm, float v_max_mm_s, float a_mm_s2);
 
 /**
- * @brief Avanza un tick: perfil trapezoidal + limite JOINT_VMAX_DPS por junta.
+ * @brief Avanza un tick: perfil trapezoidal + limites de velocidad y aceleracion por junta.
  *
- * Si alguna junta tuviera que superar JOINT_VMAX_DPS se reduce el *avance* sobre la
- * recta, no la recta: la trayectoria se conserva y solo se tarda mas.
+ * Si alguna junta tuviera que superar JOINT_VMAX_DPS, o acelerar a mas de JOINT_ACCEL_DPS2,
+ * se reduce el *avance* sobre la recta, no la recta: la trayectoria se conserva y solo se
+ * tarda mas.
  *
  * @param p Movimiento preparado.
  * @param dt_s Periodo del tick (s), > 0.

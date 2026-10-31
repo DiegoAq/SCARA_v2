@@ -110,14 +110,89 @@ static void test_otros(void)
 	static const struct { const char *txt; cmd_id_t id; } simples[] = {
 		{ "HELP", CMD_HELP }, { "home", CMD_HOME }, { "Stop", CMD_STOP },
 		{ "STATUS", CMD_STATUS }, { "ANGLE", CMD_ANGLE },
-		{ "CALIB", CMD_CALIB }, { "i2cscan", CMD_I2CSCAN }, { "ZTEST", CMD_ZTEST },
-		{ "SETZ0", CMD_SETZ0 },
+		{ "i2cscan", CMD_I2CSCAN }, { "SETZ0", CMD_SETZ0 }, { "dist", CMD_DIST },
+		{ "MAP", CMD_MAP },
 	};
 	for (unsigned i = 0; i < sizeof(simples) / sizeof(simples[0]); i++) {
 		assert(INTERPRETAR(&c, simples[i].txt) == PARSER_OK && c.id == simples[i].id);
 		assert(INTERPRETAR(&c, simples[i].txt, "1") == PARSER_ERR_CANT_ARGS);
 	}
+	assert(INTERPRETAR(&c, "Z", "-20.5") == PARSER_OK && c.id == CMD_Z && cerca(c.valor, -20.5f));
+	assert(INTERPRETAR(&c, "Z") == PARSER_ERR_CANT_ARGS);
+
+	assert(INTERPRETAR(&c, "CALIB") == PARSER_OK && c.id == CMD_CALIB && c.numero == 0);
+	assert(INTERPRETAR(&c, "calib", "2") == PARSER_OK && c.numero == 2);
+	assert(INTERPRETAR(&c, "CALIB", "x") == PARSER_ERR_ARGUMENTO);
+	assert(INTERPRETAR(&c, "CALIB", "1", "2") == PARSER_ERR_CANT_ARGS);
+
+	assert(INTERPRETAR(&c, "ZTEST", "a", "-40", "500") == PARSER_OK);
+	assert(c.id == CMD_ZTEST && c.motor == 0 && cerca(c.valor, -40.0f) && c.numero == 500);
+	assert(INTERPRETAR(&c, "ZTEST", "B", "40", "500") == PARSER_OK && c.motor == 1);
+	assert(INTERPRETAR(&c, "ZTEST", "C", "40", "500") == PARSER_ERR_ARGUMENTO);
+	assert(INTERPRETAR(&c, "ZTEST") == PARSER_ERR_CANT_ARGS);
+
+	assert(INTERPRETAR(&c, "PEN", "down") == PARSER_OK && c.id == CMD_PEN && c.activar);
+	assert(INTERPRETAR(&c, "PEN", "UP") == PARSER_OK && !c.activar);
+	assert(INTERPRETAR(&c, "PEN", "x") == PARSER_ERR_ARGUMENTO);
 	printf("OK  resto de los comandos\n");
+}
+
+static void test_rutinas(void)
+{
+	comando_t c;
+
+	assert(INTERPRETAR(&c, "PICK", "100", "300") == PARSER_OK);
+	assert(c.id == CMD_PICK && cerca(c.x_mm, 100.0f) && cerca(c.y_mm, 300.0f));
+	assert(!c.tiene_rot && !c.tiene_ancho);
+
+	assert(INTERPRETAR(&c, "pick", "100", "300", "45", "25") == PARSER_OK);
+	assert(c.tiene_rot && cerca(c.rot_deg, 45.0f) && c.tiene_ancho && cerca(c.ancho_mm, 25.0f));
+
+	/* Por nombre: se puede indicar la apertura sin la orientacion. */
+	assert(INTERPRETAR(&c, "PICK", "X100", "Y300", "A25") == PARSER_OK);
+	assert(!c.tiene_rot && c.tiene_ancho && cerca(c.ancho_mm, 25.0f));
+
+	/* Sin coordenadas: la caja que encontro SCAN. */
+	assert(INTERPRETAR(&c, "pick") == PARSER_OK && c.id == CMD_PICK && c.usar_caja);
+	assert(INTERPRETAR(&c, "PICK", "100", "300") == PARSER_OK && !c.usar_caja);
+
+	assert(INTERPRETAR(&c, "SCAN", "-100", "200", "250", "-120.5") == PARSER_OK);
+	assert(c.id == CMD_SCAN && cerca(c.x_mm, -100.0f) && cerca(c.y_mm, 200.0f));
+	assert(cerca(c.ancho_mm, 250.0f) && cerca(c.alto_mm, -120.5f));
+	assert(INTERPRETAR(&c, "SCAN") == PARSER_ERR_CANT_ARGS);
+	assert(INTERPRETAR(&c, "SCAN", "1", "2", "3") == PARSER_ERR_CANT_ARGS);
+	assert(INTERPRETAR(&c, "SCAN", "1", "2", "3", "4", "5") == PARSER_ERR_CANT_ARGS);
+	assert(INTERPRETAR(&c, "SCAN", "1", "2", "3", "x") == PARSER_ERR_ARGUMENTO);
+
+	assert(INTERPRETAR(&c, "PICK", "100") == PARSER_ERR_CANT_ARGS);
+	assert(INTERPRETAR(&c, "PICK", "X100", "A25") == PARSER_ERR_ARGUMENTO);
+	assert(INTERPRETAR(&c, "PICK", "1", "2", "3", "4", "5") == PARSER_ERR_CANT_ARGS);
+
+	assert(INTERPRETAR(&c, "PLACE", "100", "300") == PARSER_OK && c.id == CMD_PLACE);
+	assert(INTERPRETAR(&c, "PLACE", "100", "300", "1") == PARSER_ERR_CANT_ARGS);
+	assert(INTERPRETAR(&c, "PLACE", "100", "R300") == PARSER_ERR_ARGUMENTO);
+
+	assert(INTERPRETAR(&c, "PICKPLACE", "1", "2", "3", "4") == PARSER_OK);
+	assert(c.id == CMD_PICKPLACE && cerca(c.x2_mm, 3.0f) && cerca(c.y2_mm, 4.0f) && !c.tiene_rot);
+	assert(INTERPRETAR(&c, "pickplace", "1", "2", "3", "4", "5", "6") == PARSER_OK);
+	assert(c.tiene_rot && cerca(c.rot_deg, 5.0f) && c.tiene_ancho && cerca(c.ancho_mm, 6.0f));
+	assert(INTERPRETAR(&c, "PICKPLACE", "1", "2", "3") == PARSER_ERR_CANT_ARGS);
+	assert(INTERPRETAR(&c, "PICKPLACE", "1", "2", "3", "x") == PARSER_ERR_ARGUMENTO);
+
+	assert(INTERPRETAR(&c, "DRAW", "rect", "1", "2", "3", "4") == PARSER_OK);
+	assert(c.id == CMD_DRAW && c.figura == FIGURA_RECT && cerca(c.x_mm, 1.0f) && cerca(c.y_mm, 2.0f));
+	assert(cerca(c.ancho_mm, 3.0f) && cerca(c.alto_mm, 4.0f));
+	assert(INTERPRETAR(&c, "DRAW", "CIRCLE", "1", "2", "3") == PARSER_OK);
+	assert(c.figura == FIGURA_CIRCULO && cerca(c.radio_mm, 3.0f));
+	assert(INTERPRETAR(&c, "DRAW") == PARSER_ERR_CANT_ARGS);
+	assert(INTERPRETAR(&c, "DRAW", "rect", "1", "2", "3") == PARSER_ERR_CANT_ARGS);
+	assert(INTERPRETAR(&c, "DRAW", "star", "1", "2", "3") == PARSER_ERR_ARGUMENTO);
+
+	assert(INTERPRETAR(&c, "REPEAT", "1", "2", "3", "4", "10") == PARSER_OK);
+	assert(c.id == CMD_REPEAT && c.numero == 10 && cerca(c.y2_mm, 4.0f));
+	assert(INTERPRETAR(&c, "REPEAT", "1", "2", "3", "4", "1.5") == PARSER_ERR_ARGUMENTO);
+	assert(INTERPRETAR(&c, "REPEAT", "1", "2", "3", "4") == PARSER_ERR_CANT_ARGS);
+	printf("OK  rutinas\n");
 }
 
 static void test_errores(void)
@@ -138,6 +213,7 @@ int main(void)
 	test_numeros();
 	test_move();
 	test_otros();
+	test_rutinas();
 	test_errores();
 	printf("test_parser: TODO OK\n");
 	return 0;

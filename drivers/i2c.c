@@ -363,6 +363,49 @@ i2c_res_t I2C_LeerRegistros(i2c_bus_t bus, uint8_t dir7, uint8_t reg, uint8_t *d
 	return (r == I2C_OK) ? I2C_OK : abortar(b, r);
 }
 
+i2c_res_t I2C_EscribirRegistros(i2c_bus_t bus, uint8_t dir7, uint8_t reg, const uint8_t *datos, size_t n)
+{
+	if (bus >= I2C_CANT_BUSES || datos == NULL || n == 0U) {
+		return I2C_ERR_PARAM;
+	}
+	const bus_cfg_t *b = &buses[bus];
+	I2C_TypeDef *i2c = b->i2c;
+
+	i2c_res_t r = asegurar_libre(b);
+	if (r != I2C_OK) {
+		return r;
+	}
+
+	i2c->CR1 &= ~I2C_CR1_POS;
+	r = iniciar(i2c, dir7, false);
+	if (r != I2C_OK) {
+		return abortar(b, r);
+	}
+	limpiar_addr(i2c);
+
+	/* El registro y los datos salen por el mismo camino: cada byte espera TXE. */
+	r = esperar(i2c, I2C_SR1_TXE);
+	if (r != I2C_OK) {
+		return abortar(b, r);
+	}
+	i2c->DR = reg;
+	for (size_t i = 0U; i < n; i++) {
+		r = esperar(i2c, I2C_SR1_TXE);
+		if (r != I2C_OK) {
+			return abortar(b, r);
+		}
+		i2c->DR = datos[i];
+	}
+	r = esperar(i2c, I2C_SR1_BTF);
+	if (r != I2C_OK) {
+		return abortar(b, r);
+	}
+
+	i2c->CR1 |= I2C_CR1_STOP;
+	r = esperar_stop(i2c);
+	return (r == I2C_OK) ? I2C_OK : abortar(b, r);
+}
+
 i2c_res_t I2C_Sondear(i2c_bus_t bus, uint8_t dir7)
 {
 	if (bus >= I2C_CANT_BUSES) {

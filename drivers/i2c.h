@@ -49,6 +49,17 @@ i2c_res_t I2C_Init(i2c_bus_t bus);
 i2c_res_t I2C_LeerRegistros(i2c_bus_t bus, uint8_t dir7, uint8_t reg, uint8_t *datos, size_t n);
 
 /**
+ * @brief Escribe @p n bytes consecutivos a partir de un registro del esclavo.
+ * @param bus Bus a usar.
+ * @param dir7 Direccion de 7 bits del esclavo.
+ * @param reg Registro inicial.
+ * @param datos Bytes a escribir.
+ * @param n Cantidad de bytes (>= 1).
+ * @return I2C_OK o el motivo de la falla. Tras un timeout se reinicia el periferico.
+ */
+i2c_res_t I2C_EscribirRegistros(i2c_bus_t bus, uint8_t dir7, uint8_t reg, const uint8_t *datos, size_t n);
+
+/**
  * @brief Verifica si un esclavo contesta en una direccion (para I2CSCAN).
  * @return I2C_OK si hubo ACK, I2C_ERR_NACK si no hay nadie, u otro error de bus.
  */

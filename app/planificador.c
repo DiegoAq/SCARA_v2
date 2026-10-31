@@ -11,10 +11,33 @@
 
 /** Resultado de evaluar un avance candidato. */
 typedef enum {
-	EVAL_OK,		/**< Alcanzable y sin superar JOINT_VMAX_DPS */
-	EVAL_RAPIDO,	/**< Alcanzable, pero alguna junta superaria JOINT_VMAX_DPS */
+	EVAL_OK,		/**< Alcanzable y dentro de los limites de velocidad y aceleracion articular */
+	EVAL_RAPIDO,	/**< Alcanzable, pero alguna junta superaria su tope de este tick */
 	EVAL_ERROR		/**< La IK fallo: no deberia pasar despues del pre-vuelo */
 } eval_t;
+
+/**
+ * @brief Velocidad maxima que puede tener una junta en este tick.
+ *
+ * Dos limites: el tope absoluto JOINT_VMAX_DPS y la aceleracion, o sea que no puede ir mas
+ * de JOINT_ACCEL_DPS2 * dt por encima de su velocidad del tick anterior. Sin el segundo, al
+ * salir de la singularidad (brazo estirado) el codo pasaba de 0 al tope en un solo tick.
+ *
+ * El piso JOINT_W_ARRANQUE_DPS existe porque justo en la singularidad el angulo crece como
+ * la raiz del avance: el paso mas chico representable en float ya exige ~2 grados/s, y sin
+ * piso el brazo no arrancaria nunca.
+ *
+ * @param w_prev_dps Velocidad (modulo) de la junta en el tick anterior.
+ */
+static float tope_velocidad(float w_prev_dps, float dt_s)
+{
+	float tope = w_prev_dps + JOINT_ACCEL_DPS2 * dt_s;
+
+	if (tope < JOINT_W_ARRANQUE_DPS) {
+		tope = JOINT_W_ARRANQUE_DPS;
+	}
+	return (tope < JOINT_VMAX_DPS) ? tope : JOINT_VMAX_DPS;
+}
 
 /**
  * @brief Calcula la postura para una distancia recorrida y la velocidad articular que exige.
@@ -34,7 +57,8 @@ static eval_t evaluar(const plan_t *p, float s_mm, bool es_destino, float dt_s, 
 	float w1 = fabsf(sol->th1_deg - p->th1_deg) / dt_s;
 	float w2 = fabsf(sol->th2_deg - p->th2_deg) / dt_s;
 
-	return (w1 > JOINT_VMAX_DPS || w2 > JOINT_VMAX_DPS) ? EVAL_RAPIDO : EVAL_OK;
+	return (w1 > tope_velocidad(p->w1_dps, dt_s) || w2 > tope_velocidad(p->w2_dps, dt_s))
+		 ? EVAL_RAPIDO : EVAL_OK;
 }
 
 /**
@@ -154,6 +178,8 @@ plan_res_t Planificador_Preparar(plan_t *p, float th1_act_deg, float th2_act_deg
 	p->a_mm_s2 = a_mm_s2;
 	p->th1_deg = th1_act_deg;
 	p->th2_deg = th2_act_deg;
+	p->w1_dps = 0.0f;
+	p->w2_dps = 0.0f;
 	p->rama = ramas[elegida];
 	p->ticks_atasco = 0;
 	p->activo = true;
@@ -193,9 +219,9 @@ plan_paso_t Planificador_Paso(plan_t *p, float dt_s, float *th1_deg, float *th2_
 	eval_t ev = evaluar(p, p->s_mm + ds, llega && !p->detenido, dt_s, &sol);
 
 	if (ev == EVAL_RAPIDO) {
-		/* Limite articular: se busca por biparticion el mayor avance que no supera
-		 * JOINT_VMAX_DPS. Una regla de tres no alcanza cerca de la singularidad,
-		 * donde el angulo crece como la raiz del avance. */
+		/* Limite articular: se busca por biparticion el mayor avance que respeta el tope
+		 * de velocidad y de aceleracion de las dos juntas. Una regla de tres no alcanza
+		 * cerca de la singularidad, donde el angulo crece como la raiz del avance. */
 		float lo = 0.0f;
 		float hi = ds;
 		bool hay_sol = false;
@@ -238,6 +264,10 @@ plan_paso_t Planificador_Paso(plan_t *p, float dt_s, float *th1_deg, float *th2_
 		p->ticks_atasco = 0;
 	}
 
+	/* Velocidad articular real de este tick: es la base del tope de aceleracion del proximo. */
+	p->w1_dps = fabsf(sol.th1_deg - p->th1_deg) / dt_s;
+	p->w2_dps = fabsf(sol.th2_deg - p->th2_deg) / dt_s;
+
 	p->th1_deg = sol.th1_deg;
 	p->th2_deg = sol.th2_deg;
 	*th1_deg = sol.th1_deg;
@@ -255,6 +285,66 @@ plan_paso_t Planificador_Paso(plan_t *p, float dt_s, float *th1_deg, float *th2_
 	 * avance, la rampa siguiente tiene que partir de lo que realmente se movio. */
 	p->v_mm_s = ds / dt_s;
 	return PLAN_PASO_EN_CURSO;
+}
+
+void Perfil_Iniciar(perfil_t *pf, float distancia, float v_max, float a)
+{
+	if (pf == NULL) {
+		return;
+	}
+	pf->d_total = (distancia > 0.0f) ? distancia : 0.0f;
+	pf->d_obj = pf->d_total;
+	pf->s = 0.0f;
+	pf->v = 0.0f;
+	pf->v_max = v_max;
+	pf->a = a;
+	pf->detenido = false;
+}
+
+bool Perfil_Paso(perfil_t *pf, float dt_s)
+{
+	if (pf == NULL || !(dt_s > 0.0f) || !(pf->a > 0.0f)) {
+		return true;
+	}
+
+	float resto = pf->d_obj - pf->s;
+	if (resto < 0.0f) {
+		resto = 0.0f;
+	}
+
+	float v_cmd = pf->v + pf->a * dt_s;
+	float v_freno = velocidad_de_frenado(resto, pf->a, dt_s);
+	if (v_cmd > pf->v_max) {
+		v_cmd = pf->v_max;
+	}
+	if (v_cmd > v_freno) {
+		v_cmd = v_freno;
+	}
+
+	float ds = v_cmd * dt_s;
+	/* Holgura relativa: las unidades del perfil las pone quien lo usa (grados, us...). */
+	if (ds >= resto - PERFIL_TOL_FIN * pf->d_total) {
+		pf->s = pf->d_obj;
+		pf->v = 0.0f;
+		return true;
+	}
+	pf->s += ds;
+	pf->v = v_cmd;
+	return false;
+}
+
+void Perfil_Detener(perfil_t *pf)
+{
+	if (pf == NULL) {
+		return;
+	}
+
+	float d_parada = pf->s + (pf->v * pf->v) / (2.0f * pf->a);
+
+	if (d_parada < pf->d_obj) {
+		pf->d_obj = d_parada;
+		pf->detenido = true;
+	}
 }
 
 void Planificador_Detener(plan_t *p)

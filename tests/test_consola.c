@@ -1,11 +1,6 @@
 /**
  * @file test_consola.c
- * @brief Test en PC de la consola y del movimiento, con todo el hardware simulado.
- *
- * Reemplaza uart.c, systick.c, pwm.c, as5600.c e i2c.c por versiones en memoria: lo que se
- * "tipea" entra por UART_LeerByte, lo que la consola responde se acumula en un buffer, y
- * los pulsos que irian a los servos quedan registrados para verificar que ningun tick
- * supere el limite de velocidad.
+ * @brief Test en PC de la consola y del movimiento del brazo, con todo el hardware simulado.
  */
 #include <assert.h>
 #include <math.h>
@@ -16,194 +11,14 @@
 #include "cinematica.h"
 #include "config.h"
 #include "console.h"
+#include "hw_sim.h"
 #include "motion.h"
-#include "pwm.h"
-#include "systick.h"
-#include "uart.h"
-
-/* ---- UART y SysTick simulados ------------------------------------------- */
-
-static char entrada[1024];
-static size_t entrada_pos;
-static size_t entrada_len;
-static char salida[16384];
-static size_t salida_len;
-static uint32_t ms_simulado;
-
-void UART_Init(void) {}
-
-bool UART_LeerByte(uint8_t *byte)
-{
-	if (entrada_pos >= entrada_len) {
-		return false;
-	}
-	*byte = (uint8_t)entrada[entrada_pos++];
-	return true;
-}
-
-void UART_EnviarDatos(const uint8_t *datos, size_t longitud)
-{
-	assert(salida_len + longitud < sizeof(salida));
-	memcpy(salida + salida_len, datos, longitud);
-	salida_len += longitud;
-	salida[salida_len] = '\0';
-}
-
-void UART_EnviarCadena(const char *texto)
-{
-	UART_EnviarDatos((const uint8_t *)texto, strlen(texto));
-}
-
-uint32_t UART_BytesPerdidosRx(void) { return 0U; }
-uint32_t UART_BytesPerdidosTx(void) { return 0U; }
-bool SysTick_Init(void) { return true; }
-uint32_t Millis(void) { return ms_simulado; }
-
-/* ---- AS5600 e I2C simulados ---------------------------------------------- */
-
-static bool enc_presente[I2C_CANT_BUSES] = { true, true };
-static bool bus_trabado[I2C_CANT_BUSES];
-static uint16_t enc_cuentas[I2C_CANT_BUSES];
-static as5600_iman_t enc_iman[I2C_CANT_BUSES];
-
-i2c_res_t I2C_Init(i2c_bus_t bus) { (void)bus; return I2C_OK; }
-
-i2c_res_t I2C_Sondear(i2c_bus_t bus, uint8_t dir7)
-{
-	if (bus_trabado[bus]) {
-		return I2C_ERR_TIMEOUT;
-	}
-	return (enc_presente[bus] && dir7 == AS5600_DIRECCION) ? I2C_OK : I2C_ERR_NACK;
-}
-
-bool AS5600_Init(i2c_bus_t bus) { return enc_presente[bus]; }
-
-bool AS5600_LeerCuentas(i2c_bus_t bus, uint16_t *cuentas)
-{
-	if (!enc_presente[bus]) {
-		return false;
-	}
-	*cuentas = enc_cuentas[bus];
-	return true;
-}
-
-bool AS5600_LeerAngulo(i2c_bus_t bus, float *grados)
-{
-	uint16_t c;
-
-	if (!AS5600_LeerCuentas(bus, &c)) {
-		return false;
-	}
-	*grados = (float)c * (360.0f / (float)AS5600_CUENTAS_VUELTA);
-	return true;
-}
-
-as5600_iman_t AS5600_EstadoIman(i2c_bus_t bus)
-{
-	return enc_presente[bus] ? enc_iman[bus] : AS5600_SIN_RESPUESTA;
-}
-
-bool AS5600_ImanOK(i2c_bus_t bus) { return AS5600_EstadoIman(bus) == AS5600_IMAN_OK; }
-
-/* ---- PWM simulado --------------------------------------------------------- */
-
-static uint32_t pwm_us[PWM_CANT];
-static bool pwm_activo[PWM_CANT];
-
-void PWM_Init(void)
-{
-	for (int i = 0; i < PWM_CANT; i++) {
-		pwm_us[i] = 0U;
-		pwm_activo[i] = false;
-	}
-}
-
-void PWM_ConfigurarPulsoUs(pwm_id_t id, uint32_t us)
-{
-	/* Quien llama ya tiene que haber saturado: aca seria un pulso fuera de rango al servo. */
-	assert(us >= PULSE_MIN_US && us <= PULSE_MAX_US);
-	pwm_us[id] = us;
-}
-
-void PWM_Habilitar(pwm_id_t id, bool habilitar)
-{
-	pwm_activo[id] = habilitar;
-}
-
-/* ---- Ayudas -------------------------------------------------------------- */
-
-/** Mayor cambio de pulso admitido por tick: JOINT_VMAX_DPS, mas 1 us de redondeo. */
-#define DELTA_US_MAX	((int)(JOINT_VMAX_DPS * (float)TICK_MS / 1000.0f \
-						 * (float)(PULSE_MAX_US - PULSE_MIN_US) / SERVO_RANGE_DEG) + 1)
-
-static int delta_us_visto;	/* mayor cambio de pulso en un tick desde la ultima puesta a cero */
-
-/**
- * Hace correr el loop de control hasta que el brazo queda quieto o pasan @p max ticks.
- * En CADA tick verifica el limite de velocidad sobre los pulsos que salen al servo.
- * \return ticks ejecutados. La salida de la consola se acumula (no se borra).
- */
-static int correr(int max)
-{
-	int n = 0;
-
-	while (n < max) {
-		uint32_t antes[PWM_CANT];
-
-		memcpy(antes, pwm_us, sizeof(antes));
-		ms_simulado += TICK_MS;
-		Motion_Tick();
-		Consola_DespuesDelTick();
-		n++;
-
-		for (int i = 0; i < PWM_CANT; i++) {
-			int delta = abs((int)pwm_us[i] - (int)antes[i]);
-
-			assert(delta <= DELTA_US_MAX);
-			if (delta > delta_us_visto) {
-				delta_us_visto = delta;
-			}
-		}
-		if (Motion_Estado() != MOTION_MOVING && Motion_Estado() != MOTION_STOPPING) {
-			break;
-		}
-	}
-	return n;
-}
-
-/** "Tipea" un texto, procesa todo lo recibido y devuelve lo que respondio la consola. */
-static const char *tipear(const char *texto)
-{
-	salida_len = 0U;
-	salida[0] = '\0';
-	entrada_len = strlen(texto);
-	assert(entrada_len < sizeof(entrada));
-	memcpy(entrada, texto, entrada_len);
-	entrada_pos = 0U;
-
-	/* Como el loop: varias vueltas de a CONSOLA_BYTES_POR_VUELTA. */
-	while (entrada_pos < entrada_len) {
-		Consola_Procesar();
-	}
-	return salida;
-}
-
-static int contar(const char *texto, const char *buscado)
-{
-	int n = 0;
-	for (const char *p = strstr(texto, buscado); p != NULL; p = strstr(p + 1, buscado)) {
-		n++;
-	}
-	return n;
-}
 
 /* ---- Tests --------------------------------------------------------------- */
 
 static void test_arranque(void)
 {
-	salida_len = 0U;
-	Motion_Init();
-	Consola_Init(true);
+	hw_sim_reiniciar();
 	assert(strstr(salida, "consola lista") != NULL);
 	assert(strstr(salida, "SCARA>") != NULL);
 	assert(strstr(salida, "WARN") == NULL);
@@ -262,7 +77,6 @@ static void test_speed_accel(void)
 static void test_errores(void)
 {
 	assert(strstr(tipear("hola\r"), "ERR 1 comando desconocido") != NULL);
-	assert(strstr(tipear("calib\r"), "ERR 1 comando no disponible") != NULL);
 	assert(strstr(tipear("move 300\r"), "ERR 1 cantidad de argumentos") != NULL);
 
 	/* Linea vacia: solo vuelve el prompt, sin OK ni ERR. */
@@ -395,11 +209,12 @@ static void test_arranque_servos(void)
 
 	/* Primer HOME: habilita con los dos servos en 90 (1500 us) = brazo extendido en X0 Y400. */
 	assert(strstr(tipear("home\r"),
-				  "OK servos habilitados en HOME x=0.0 y=400.0 q1=90.0 q2=0.0\r\n") != NULL);
+				  "OK servos habilitados en HOME x=0.0 y=400.0 q1=90.0 q2=0.0 servo1=90.0(1500us) servo2=90.0(1500us)\r\n") != NULL);
 	assert(pwm_activo[PWM_SERVO_HOMBRO] && pwm_activo[PWM_SERVO_CODO]);
 	assert(pwm_us[PWM_SERVO_HOMBRO] == 1500U && pwm_us[PWM_SERVO_CODO] == 1500U);
 	assert(!pwm_activo[PWM_SERVO_GRIPPER]);
 	assert(strncmp(estado_servos(), "servos=ON q1=90.0 q2=0.0 x=0.0 y=400.0", 38) == 0);
+	assert(strstr(estado_servos(), "servo1=90.0(1500us) servo2=90.0(1500us)") != NULL);
 
 	/* Un segundo HOME estando en HOME no mueve nada. */
 	assert(strstr(tipear("home\r"), "OK ya esta en el destino") != NULL);
@@ -409,18 +224,22 @@ static void test_arranque_servos(void)
 /** JOINT, HOME y STOP en movimientos articulares. */
 static void test_joint(void)
 {
-	/* 30 grados en cada junta a JOINT_MOVE_DPS = 30 grados/s => 1 s = 50 ticks. */
+	/* 30 grados en cada junta: crucero a JOINT_MOVE_DPS = 30 grados/s con rampas de
+	 * JOINT_ACCEL_DPS2 = 90 grados/s2 => d/v + v/a = 1,33 s = 67 ticks. */
 	delta_us_visto = 0;
+	acel_us_vista = 0;
 	assert(strstr(tipear("joint 60 30\r"), "OK\r\n") != NULL);
 	assert(Motion_Estado() == MOTION_MOVING);
 	salida_len = 0U;
 	int ticks = correr(1000);
-	assert(ticks == 50);
+	assert(ticks >= 66 && ticks <= 68);
 	assert(strstr(salida, "DONE ") != NULL && strstr(salida, "q1=60.0 q2=30.0") != NULL);
 	assert(Motion_Estado() == MOTION_IDLE);
 	/* theta1 = 60 -> servo 60 -> 1167 us; theta2 = 30 -> servo 120 -> 1833 us. */
 	assert(pwm_us[PWM_SERVO_HOMBRO] == 1167U && pwm_us[PWM_SERVO_CODO] == 1833U);
 	assert(delta_us_visto >= 6 && delta_us_visto <= 8);	/* 30 grados/s = 6,7 us por tick */
+	/* Arranca y frena con rampa: la velocidad nunca salta mas que JOINT_ACCEL_DPS2 por tick. */
+	assert(acel_us_vista >= 1 && acel_us_vista <= ACEL_US_MAX);
 
 	/* Fuera de limites: no se mueve. */
 	assert(strstr(tipear("joint 200 0\r"), "ERR 3 limite articular") != NULL);
@@ -433,12 +252,19 @@ static void test_joint(void)
 	assert(strstr(tipear("joint 90 0\r"), "ERR 4 movimiento en curso") != NULL);
 	assert(strstr(tipear("move 0 300\r"), "ERR 4 movimiento en curso") != NULL);
 	assert(strstr(tipear("raw live\r"), "ERR 4 movimiento en curso") != NULL);
+	assert(correr(20) == 20);						/* ya va a velocidad de crucero */
 	uint32_t hombro = pwm_us[PWM_SERVO_HOMBRO];
+	acel_us_vista = 0;
 	assert(strstr(tipear("stop\r"), "OK\r\n") != NULL);
+	assert(Motion_Estado() == MOTION_STOPPING);
 	salida_len = 0U;
-	assert(correr(1000) == 1);
+	int frenado = correr(1000);
+	/* Frena con rampa (30 grados/s a 90 grados/s2 = 0,33 s = 17 ticks), no en seco. */
+	assert(frenado >= 12 && frenado <= 20);
 	assert(strstr(salida, "STOPPED ") != NULL);
-	assert(pwm_us[PWM_SERVO_HOMBRO] == hombro);		/* quedo donde estaba */
+	assert(acel_us_vista <= ACEL_US_MAX);
+	/* Siguio 5 grados mas (v^2/2a) hacia el destino y quedo lejos de el (theta1 = 120 -> 1833 us). */
+	assert(pwm_us[PWM_SERVO_HOMBRO] > hombro + 30U && pwm_us[PWM_SERVO_HOMBRO] < 1700U);
 
 	/* HOME con los servos ya habilitados: vuelve despacio. */
 	assert(strstr(tipear("home\r"), "OK\r\n") != NULL);
@@ -474,7 +300,7 @@ static void test_move(void)
 	assert(strstr(tipear("move 0 100\r"), "ERR 2 fuera del espacio de trabajo") != NULL);
 	assert(strstr(tipear("move 0 500\r"), "ERR 2 fuera del espacio de trabajo") != NULL);
 	assert(strstr(tipear("move 0 -300\r"), "ERR 2 fuera del espacio de trabajo") != NULL);
-	assert(strstr(tipear("move 0 350 10\r"), "ERR 1 el eje Z") != NULL);
+	assert(strstr(tipear("move 0 350 10\r"), "ERR 7 eje Z sin referencia") != NULL);
 	assert(strstr(tipear("move 0 300\r"), "OK ya esta en el destino") != NULL);
 	assert(Motion_Estado() == MOTION_IDLE && pwm_us[PWM_SERVO_HOMBRO] == hombro);
 
@@ -503,7 +329,9 @@ static void test_pulse(void)
 	delta_us_visto = 0;
 	assert(strstr(tipear("pulse 2 1600\r"), "OK\r\n") != NULL);
 	salida_len = 0U;
-	assert(correr(1000) == 15);		/* 100 us a 6,7 us por tick */
+	/* 100 us = 9 grados: no llega a crucero, sube y baja (perfil triangular, ~0,63 s). */
+	int ticks = correr(1000);
+	assert(ticks >= 28 && ticks <= 36);
 	assert(strstr(salida, "DONE ") != NULL);
 	assert(pwm_us[PWM_SERVO_CODO] == 1600U && pwm_us[PWM_SERVO_HOMBRO] == 1500U);
 	assert(delta_us_visto <= 8);
@@ -515,7 +343,7 @@ static void test_pulse(void)
 	(void)correr(5000);
 	assert(pwm_us[PWM_SERVO_HOMBRO] == (uint32_t)PULSE_MAX_US);
 
-	assert(strstr(tipear("pulse 3 1500\r"), "ERR 6") != NULL);
+	assert(strstr(tipear("pulse 4 1500\r"), "ERR 6") != NULL);
 	assert(strstr(tipear("pulse 0 1500\r"), "ERR 6") != NULL);
 	assert(strstr(tipear("pulse 1 1500.5\r"), "ERR 1") != NULL);
 
@@ -524,6 +352,24 @@ static void test_pulse(void)
 	(void)correr(5000);
 	assert(pwm_us[PWM_SERVO_HOMBRO] == 1500U && pwm_us[PWM_SERVO_CODO] == 1500U);
 	printf("OK  PULSE saturado y con limite de velocidad\n");
+}
+
+/** RAW LIVE no bloquea: el tick sigue corriendo y cualquier tecla sale, sin llegar a microrl. */
+static void test_raw_en_vivo(void)
+{
+	assert(strstr(tipear("raw live\r"), "RAW en vivo") != NULL);
+	borrar_salida();
+	for (int i = 0; i < 16; i++) {
+		(void)correr(1);
+	}
+	assert(contar(salida, "raw1=") >= 2);
+	assert(strstr(tipear("x"), "OK fin") != NULL);
+
+	borrar_salida();
+	(void)correr(1);
+	assert(contar(salida, "raw1=") == 0);
+	assert(strstr(tipear("status\r"), "OK estado=") != NULL);
+	printf("OK  RAW LIVE sin bloquear el tick\n");
 }
 
 static void test_tick(void)
@@ -558,6 +404,7 @@ int main(void)
 	test_joint();
 	test_move();
 	test_pulse();
+	test_raw_en_vivo();
 	test_tick();
 	printf("test_consola: TODO OK\n");
 	return 0;

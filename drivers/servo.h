@@ -65,4 +65,14 @@ uint32_t Servo_PulsoDeJunta(servo_id_t id, float theta_deg);
  */
 float Servo_JuntaDePulso(servo_id_t id, uint32_t pulso_us);
 
+/**
+ * @brief Angulo de SERVO (no de junta) que corresponde a un pulso, en grados.
+ */
+float Servo_AnguloDePulso(servo_id_t id, uint32_t pulso_us);
+
+/**
+ * @brief Microsegundos de pulso por grado de este servo (positivo).
+ */
+float Servo_UsPorGrado(servo_id_t id);
+
 #endif /* SERVO_H */
